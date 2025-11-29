@@ -74,9 +74,11 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         [ Char('l') ] => [ DotSet(Arr(Right), 1) ],
         // >> line anchors
         "move to start of line";
-        [ Ctrl('h') ] => [ DotSet(LineStart, 1) ],
+        [ Char('^') ] => [ DotSet(LineStart, 1) ],
+        // [ Ctrl('h') ] => [ DotSet(LineStart, 1) ],
         "move to end of line";
-        [ Ctrl('l') ] => [ DotSet(LineEnd, 1) ],
+        [ Char('$') ] => [ DotSet(LineEnd, 1) ],
+        // [ Ctrl('l') ] => [ DotSet(LineEnd, 1) ],
         "move to start of line";
         [ Home ] => [ DotSet(LineStart, 1) ],
         "move to end of line";
@@ -100,7 +102,8 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         "move to start of buffer";
         [ Char('g'), Char('g') ] => [ DotSet(BufferStart, 1) ],
         "move to end of buffer";
-        [ Char('g'), Char('e') ] => [ DotSet(BufferEnd, 1) ],
+        [ Char('G')] => [ DotSet(BufferEnd, 1) ],
+        // [ Char('g'), Char('e') ] => [ DotSet(BufferEnd, 1) ],
         "move to start of line";
         [ Char('g'), Char('h') ] => [ DotSet(LineStart, 1) ],
         "move to end of line";
