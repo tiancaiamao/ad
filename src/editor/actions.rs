@@ -5,7 +5,7 @@ use crate::{
     config_handle,
     dot::{Cur, Dot, Range, TextObject},
     editor::{Editor, MbSelector, MiniBufferSelection},
-    exec::{Addr, Address, Program},
+    exec::{Addr, Address, EditorRunner, Program},
     fsys::LogEvent,
     key::{Arrow, Input},
     lsp::Coords,
@@ -645,9 +645,9 @@ where
                 self.open_file(data, load_in_new_window);
                 if let Some(s) = attrs.get("addr") {
                     match Addr::parse(s) {
-                        Ok(mut addr) => {
+                        Ok(addr) => {
                             let b = self.layout.active_buffer_mut();
-                            b.dot = b.map_addr(&mut addr);
+                            b.dot = b.map_addr(&addr);
                         }
                         Err(e) => self.set_status_message(format!("malformed addr: {e:?}")),
                     }
@@ -691,9 +691,9 @@ where
 
         if is_file {
             self.open_file(path, load_in_new_window);
-            if let Some(mut addr) = maybe_addr {
+            if let Some(addr) = maybe_addr {
                 let b = self.layout.active_buffer_mut();
-                b.dot = b.map_addr(&mut addr);
+                b.dot = b.map_addr(&addr);
                 self.layout.clamp_scroll();
                 self.handle_action(Action::SetViewPort(ViewPort::Center), Source::Fsys);
             }
@@ -760,7 +760,7 @@ where
 
     pub(super) fn execute_edit_command(&mut self, cmd: &str) {
         debug!(%cmd, "executing edit command");
-        let mut prog = match Program::try_parse(cmd) {
+        let prog = match Program::try_parse(cmd) {
             Ok(prog) => prog,
             Err(error) => {
                 warn!(?error, "invalid edit command");
@@ -773,7 +773,13 @@ where
         let b = self.layout.active_buffer_mut_ignoring_scratch();
         let fname = b.full_name().to_string();
 
-        match prog.execute(b, &fname, &mut buf) {
+        let mut runner = EditorRunner {
+            system: &mut self.system,
+            dir: b.dir().unwrap_or(&self.cwd).to_path_buf(),
+            bufid: b.id,
+        };
+
+        match prog.execute(b, &mut runner, &fname, &mut buf) {
             Ok(new_dot) => {
                 self.layout.record_jump_position();
                 self.layout.active_buffer_mut_ignoring_scratch().dot = new_dot;
