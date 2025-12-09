@@ -357,6 +357,22 @@ impl GapBuffer {
         (&self.data[0..self.gap_start], &self.data[self.gap_end..])
     }
 
+    /// Whether or not the contents of the buffer end with a final newline character.
+    ///
+    /// POSIX semantics define a line as "A sequence of zero or more non-newline characters plus
+    /// a terminating newline character."
+    ///
+    /// See: <https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap03.html#tag_03_206>
+    pub fn has_trailing_newline(&self) -> bool {
+        let (l, r) = self.as_byte_slices();
+
+        if r.is_empty() {
+            l.ends_with(b"\n")
+        } else {
+            r.ends_with(b"\n")
+        }
+    }
+
     /// Iterate over the characters of the buffer
     pub fn chars(&self) -> Chars<'_> {
         self.as_slice().chars()
@@ -402,20 +418,22 @@ impl GapBuffer {
         self.n_chars
     }
 
-    pub fn byte_line_endings(&self) -> Vec<usize> {
-        let mut endings: Vec<_> = self
-            .line_endings
-            .iter()
-            .map(|(i, _)| self.raw_byte_to_byte(*i))
-            .collect();
-        let eob = self.len();
-
-        match endings.last() {
-            Some(&idx) if idx == eob => (),
-            _ => endings.push(eob),
+    /// The byte offset of the end of the given line.
+    ///
+    /// For lines with a trailing newline this is the position of the newline character,
+    /// for the final line (if there is no trailing newline) this is the end of the buffer.
+    #[inline]
+    pub fn line_end_byte(&self, line_idx: usize) -> usize {
+        if line_idx < self.line_endings.len() {
+            self.raw_byte_to_byte(self.line_endings[line_idx].0)
+        } else {
+            self.len()
         }
+    }
 
-        endings
+    pub fn lines_before_byte_offset(&self, byte_offset: usize) -> usize {
+        let raw_offset = self.byte_to_raw_byte(byte_offset);
+        self.line_endings.partition_point(|(b, _)| *b < raw_offset)
     }
 
     /// Clear the contents of the buffer.

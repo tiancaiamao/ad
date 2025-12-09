@@ -65,7 +65,7 @@ pub enum ActionOutcome {
 }
 
 /// Buffer kinds control how each buffer interacts with the rest of the editor functionality
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BufferKind {
     /// A regular buffer that is backed by a file on disk.
     File(PathBuf),
@@ -76,15 +76,10 @@ pub(crate) enum BufferKind {
     /// An in-memory buffer holding output from commands run within a given directory
     Output(String),
     /// A currently un-named buffer that can be converted to a File buffer when named
+    #[default]
     Unnamed,
     /// State for an active mini-buffer
     MiniBuffer,
-}
-
-impl Default for BufferKind {
-    fn default() -> Self {
-        Self::Unnamed
-    }
 }
 
 impl BufferKind {
@@ -354,7 +349,15 @@ impl Buffer {
         None
     }
 
-    pub(crate) fn save_to_disk_at(&mut self, path: PathBuf, force: bool) -> Result<String, String> {
+    pub(crate) fn save_to_disk_at(
+        &mut self,
+        path: impl AsRef<Path>,
+        force: bool,
+    ) -> Result<String, String> {
+        if !self.has_trailing_newline() {
+            self.insert_char(TextObject::BufferEnd.as_dot(self), '\n', None);
+        }
+
         if !self.dirty {
             return Err("Nothing to save".to_string());
         }
@@ -367,6 +370,7 @@ impl Buffer {
             }
         }
 
+        let path = path.as_ref();
         let n_lines = self.len_lines();
         let contents = self.txt.make_contiguous();
         let display_path = match path.canonicalize() {
@@ -475,6 +479,16 @@ impl Buffer {
     /// Check whether or not this is an unnamed buffer
     pub fn is_unnamed(&self) -> bool {
         self.kind == BufferKind::Unnamed
+    }
+
+    /// Whether or not the contents of the buffer end with a final newline character.
+    ///
+    /// POSIX semantics define a line as "A sequence of zero or more non-newline characters plus
+    /// a terminating newline character."
+    ///
+    /// See: <https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap03.html#tag_03_206>
+    pub fn has_trailing_newline(&self) -> bool {
+        self.txt.has_trailing_newline()
     }
 
     /// Check the current [Config] to see if this buffer matches a known filetype configuration.
@@ -884,11 +898,11 @@ impl Buffer {
             Action::Redo => return self.redo(),
             Action::Undo => return self.undo(),
 
-            Action::DotCollapseFirst => self.dot = self.dot.collapse_to_first_cur(),
-            Action::DotCollapseLast => self.dot = self.dot.collapse_to_last_cur(),
+            Action::DotCollapseFirst => self.collapse_dot(true),
+            Action::DotCollapseLast => self.collapse_dot(false),
             Action::DotExtendBackward(tobj, count) => self.extend_dot_backward(tobj, count),
             Action::DotExtendForward(tobj, count) => self.extend_dot_forward(tobj, count),
-            Action::DotFlip => self.dot.flip(),
+            Action::DotFlip => self.flip_dot(),
             Action::DotSet(t, count) => self.set_dot(t, count),
             Action::DotSetFromCoords { coords } => self.set_dot_from_coords(coords),
 
@@ -1013,6 +1027,21 @@ impl Buffer {
         }
         self.dot.clamp_idx(self.txt.len_chars());
         self.xdot.clamp_idx(self.txt.len_chars());
+        self.changed_since_last_render = true;
+    }
+
+    fn collapse_dot(&mut self, first: bool) {
+        self.dot = if first {
+            self.dot.collapse_to_first_cur()
+        } else {
+            self.dot.collapse_to_last_cur()
+        };
+
+        self.changed_since_last_render = true;
+    }
+
+    fn flip_dot(&mut self) {
+        self.dot.flip();
         self.changed_since_last_render = true;
     }
 

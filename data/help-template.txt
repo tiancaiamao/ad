@@ -27,9 +27,15 @@ About
 The Tour
 Configuration
 Editor Modes
-Key Bindings
+Selecting Text
 Loading Text
 Executing Text
+Key Bindings
+Mouse Interactions
+The Minibuffer
+Windows and Columns
+Virtual Buffers
+The Jump List
 Running Built In Commands
 Running External Commands
 Running Edit Commands
@@ -37,6 +43,7 @@ The Filesystem Interface
 Plumbing
 LSP support
 Syntax Highlighting
+Debugging and Troubleshooting
 
 ---
 
@@ -173,28 +180,57 @@ mode you are in you will find that the keys that you press have a different effe
 
 ---
 
->> Key Bindings
+>> Selecting Text
 
-The following key bindings are built into ad. You can specify additional key bindings as
-part of your config file under the [keys.normal] and [keys.insert] sections like so:
+ad is built around the idea of making and refining text selections within a buffer before
+applying an editing action to that selection. While you can always move into INSERT mode
+and use ad as any other text editor, you will quickly find that you are missing a lot of
+what makes ad unique if you don't take the time to learn about selecting text.
 
-    [keys.normal]
-    # Window & Column management
-    "<space> w /" = { run = "new-column" }
-    "<space> w -" = { run = "new-window" }
-    "<space> w h" = { run = "prev-column" }
-    "<space> w j" = { run = "next-window" }
-    "<space> w k" = { run = "prev-window" }
-    "<space> w l" = { run = "next-column" }
+Each buffer in ad has an active selection that is known as "dot". This can be a single
+character (a "cursor") or a continuous range of characters (a "range"). The current dot
+for a given buffer can be set and manipulated in a number of different ways, the most
+obvious being through clicking and dragging the mouse or using the arrow keys. However,
+there are more advanced ways of manipulating the current dot that can help you to perform
+more complex editing and automation tasks once you get the hang of them.
 
-    [keys.insert]
-    # Custom escape sequence to return to normal mode
-    "f d" = { send_keys = "<esc>" }
+  Extending and Setting Dot
+    The first and most commonly used way of altering your selection within a buffer is to
+    use the built-in NORMAL mode key bindings. As a general rule, lowercase keys will *set*
+    the current dot and uppercase keys will *extend* it. For example, j/k moves up and down
+    lines while J/K starts and extends a selection up or down one line from the current
+    active cursor position.
+    
+    See the "Keybindings" section for all of the available actions.
 
-Any key bindings that you specify need to be distinct from the ones shown below in the
-default key maps.
+  Selecting Within Delimiters
+    You can quickly select text within matching delimiters by using Alt-i followed by the
+    delimiter character. For example, Alt-i " will select the text within the nearest pair
+    of double quotes, and Alt-i ( will select the text within the nearest pair of parentheses.
 
-{{KEY_BINDINGS}}
+    The following delimiters are supported: ( ) [ ] { } < > " ' /
+
+  "Smart" expansion
+    Pressing "*" in NORMAL mode while dot is a cursor will attempt to smart-expand to select
+    the filepath, URL or word under that cursor. This is a best-effort convenience that is
+    typically then followed by loading or executing that selection rather than being used in
+    conjunction with other dot manipulation techniques.
+
+  Flipping and Collapsing Ranges
+    When you have a range dot you will notice that you still have a visual marker for the
+    cursor at one end of your selection. This is your "active" cursor, and it is where all
+    actions that extend or set the current dot are applied. If you want to instead work with
+    the other end of your selected range you can press ";" in NORMAL mode to flip which
+    cursor is active. (This is particularly useful for refining selections from both ends
+    with additional NORMAL mode key bindings for extending dot).
+
+    If instead you want to quickly collapse a range down to a single cursor, you can press ","
+    to collapse to the start of the selection or Alt-, to collapse to the end.
+
+  Edit Mode and Structural Regular Expressions
+    ad contains a powerful editing language known as "structural regular expressions" that is
+    exposed through its EDIT mode. See the "Running Edit Commands" section for details on how
+    this works and how it can be used to both manipulate dot and directly apply editing actions.
 
 ---
 
@@ -324,6 +360,182 @@ being redirected to a +output buffer.
 
 ---
 
+>> Key Bindings
+
+The following key bindings are built into ad. You can specify additional key bindings as
+part of your config file under the [keys.normal] and [keys.insert] sections like so:
+
+    [keys.normal]
+    # Window & Column management
+    "<space> w /" = { run = "new-column" }
+    "<space> w -" = { run = "new-window" }
+    "<space> w h" = { run = "prev-column" }
+    "<space> w j" = { run = "next-window" }
+    "<space> w k" = { run = "prev-window" }
+    "<space> w l" = { run = "next-column" }
+
+    [keys.insert]
+    # Custom escape sequence to return to normal mode
+    "f d" = { send_keys = "<esc>" }
+
+Any key bindings that you specify need to be distinct from the ones shown below in the
+default key maps.
+
+{{KEY_BINDINGS}}
+
+---
+
+>> Mouse Interactions
+
+ad supports using the mouse for navigation, selection and interaction with text. The mouse
+bindings are inspired by those found in the acme text editor from Plan 9, providing a
+consistent way to Load and Execute text alongside the keyboard shortcuts described in the
+previous section.
+
+  Left Click
+    The left mouse button is used to select text. A single click positions the cursor, and a
+    drag will select a continuous range of text (as you would expect from pretty much any text
+    editor you have used previously). Double clicking will expand to select the word you are
+    clicking inside of, or if you click just inside of a standard delimiter as shown below,
+    expand to contain all of the text within the delimiters.
+
+      "Double click just after the opening quote or before the closing one"
+      (same for parentheses) [and brackets] {and curly brackets} <and angle brackets>
+
+    Double clicking at the start or end of a line will select the entire line.
+
+  Right Click
+    The right mouse button is used for Loading text (see the "Loading Text" section for
+    more details). Right clicking will Load the text at the current cursor position after
+    first expanding to a word, file path or URL if the cursor is not already part of a
+    selection. If you click and drag with the right button held down you will Load the
+    selected range when you release the button.
+
+  Middle Click
+    The middle mouse button is used for Executing text (see the "Executing Text" section for
+    more details). Middle clicking will Execute the text under the current cursor position,
+    after first expanding to a whitespace delimited word if the cursor is not already
+    part of a selection. If you click and drag with the middle button held down you will
+    Execute the selected range when you release the button.
+
+You can also use the mouse to resize windows and columns by clicking and dragging on the
+border between them. This allows you to quickly adjust your layout without having to run
+the resize commands described in the "Running Built In Commands" section.
+
+---
+
+>> The Minibuffer
+
+The minibuffer is ad's interactive selection interface. It is presented at the bottom of
+the screen whenever you need to select from a list of options (such as searching within a
+buffer, selecting a file to open or reviewing LSP diagnostics).
+
+When the minibuffer is visible you can use the up and down arrow keys (or Alt-j/k) to move
+the highlighted line up and down through the available options. Pressing Enter will select
+the currently highlighted line and apply the associated action based on the mode that opened
+the minibuffer. Pressing Escape will cancel the operation and close the minibuffer without
+making a selection.
+
+Try pressing the "/" key in normal mode to fuzzy search through the contents of the active
+buffer. Hitting enter will jump you to that line within the buffer.
+
+The number of lines displayed in the minibuffer can be configured by setting the
+'minibuffer_lines' property in your config.toml file (see the "Configuration" section for
+more details). The default is to show up to 8 lines at a time.
+
+---
+
+>> Windows and Columns
+
+The ad user interface is inspired by the acme text editor and is made up of a array of
+columns, each containing one or more windows that are arranged vertically one above the
+other. This setup doesn't support arbitrary arrangements of windows but it is more than
+sufficient for arranging multiple buffers alongside one another for editing.
+
+Windows in the UI layout are permitted to contain any open buffer within the editor, allowing
+you to have multiple copies of the same buffer side by side in order to view different parts
+of the file at once.
+
+  Creating Windows and Columns
+    You can create a new window within the current column by running the 'new-window' command,
+    which will clone the current window and place it at the end of the column. Similarly, the
+    'new-column' command will create a new column containing a clone of the current window. See
+    the "Running Built In Commands" section for the full list of available commands.
+
+  Navigating Between Windows and Columns
+    In NORMAL mode you can use Alt-w/a/s/d to move focus between open windows.
+
+  Moving Windows Around
+    In NORMAL mode you can use Alt-W/A/S/D to drag the focused window between columns and within
+    the column it is currently in.
+
+    You can move the currently focused window by holding down Alt and pressing W, A, S or D to
+    drag it up, left, down or right respectively. Moving a window left or right will move it to
+    the adjacent column, while moving it up or down will swap it with the window above or below.
+
+  Resizing
+    Windows and columns can be resized either by clicking and dragging on the border between
+    them with the mouse (see the "Mouse Interactions" section) or by using the 'resize-window'
+    and 'resize-column' commands. The 'balance-all', 'balance-column', 'balance-columns' and
+    'balance-windows' commands can be used to reset windows and columns to equal sizes.
+
+  Closing Windows and Columns
+    The 'delete-window' and 'delete-column' commands (along with their forced variants) can be
+    used to close windows and columns. If you close the last window displaying a buffer with
+    unsaved changes you will be prompted to save before the window is closed.
+
+See the "Key Bindings" section for details of available shortcuts for running some of the more
+common layout manipulation commands.
+
+---
+
+>> Virtual Buffers
+
+In addition to buffers that are backed by files on disk, ad makes use of several virtual
+buffers that exist only within the editor. Typically the name for these buffers start with
+a "+" character but that is simply a naming convention.
+
+  +scratch
+    The scratch buffer is a place for you to quickly write and run commands or keep notes.
+    You can toggle the scratch buffer open and closed by pressing Alt-; in either NORMAL or
+    INSERT mode. Commands executed from the scratch buffer act as if they were executed from
+    within the currently active buffer.
+
+  +output
+    When you run external commands from within ad (either using RUN mode or by Executing text),
+    the standard output and error from those commands will be redirected to an output buffer
+    named after the directory containing the active buffer. For example, if you run a command
+    while editing a file in /home/innes/example/hello.txt, the output will be written to a buffer
+    named '/home/innes/example/+output'.
+
+  +help
+    The built-in help documentation (this file!) is displayed in a buffer named '+help' when you
+    run the 'help' command.
+
+  +logs
+    Internal editor logs can be viewed by running the 'view-logs' command or pressing Alt-= in
+    NORMAL mode. This can be useful for debugging issues with your config files and the editor
+    itself. You can increase the verbosity of the logs by setting the AD_LOG environment variable
+    to "debug" or "trace".
+
+  NOTE: Unlike file-backed buffers, virtual buffers are not saved to disk and their contents
+        will be lost when you close the editor unless you explicitly save them to a file.
+
+---
+
+>> The Jump List
+
+ad maintains a "jump list" that tracks your navigation history as you move between buffers.
+The jump list automatically records your position whenever you set the buffer Dot via a
+command (such as searching or switching buffers) or make an edit to a buffer. Navigating
+back through the jump list and then making further edits will clear any "stale" entries
+that are now invalid beyond that point in the list.
+
+To make use of the jump list, you need to be in NORMAL mode. From there, you can press
+Alt-[ or Ctrl-o to move backwards through the list, and Alt-] or Ctrl-i to move forward.
+
+---
+
 >> Running Built In Commands
 
 The following commands are all built into ad and are runnable via the COMMAND mode
@@ -340,7 +552,15 @@ string to the "ctl" file in the filesystem interface.
 All commands available on the user's $PATH are executable from within ad in addition to anything
 located in the ~/.ad/bin directory. The $bufid environment variable will be set to the id of the
 buffer that the command was run from (the active buffer if run from RUN mode) and the working
-directory will be set to the directory containing the active buffer.
+directory will be set to the directory containing the active buffer. Output from running commands
+is redirected to the appropriate +output buffer as described in the "Virtual Buffers" section.
+
+  Managing Running Processes
+    When you execute external commands from within ad, those commands run as child processes
+    of the editor. If you need to terminate a long-running command, you can use the 'kill'
+    command from COMMAND mode which will present you with a list of currently running processes
+    in the minibuffer. Select the process you wish to terminate and press Enter to send it a
+    SIGTERM signal.
 
 ---
 
@@ -486,5 +706,32 @@ For a quick way of re-using parsers and queries from neovim, see the following f
 project:
   https://github.com/nvim-treesitter/nvim-treesitter/blob/master/lua/nvim-treesitter/parsers.lua
   https://github.com/nvim-treesitter/nvim-treesitter/tree/master/queries
+
+---
+
+>> Debugging and Troubleshooting
+
+ad provides several commands and key bindings for inspecting the internal state of the editor
+and debugging issues with your configuration or the editor itself.
+
+  Viewing Internal Logs
+    You can view the internal editor logs by running the 'view-logs' command from COMMAND mode
+    or by pressing Alt-= in NORMAL mode. This will open a buffer named '+logs' containing log
+    messages from the editor.
+
+    The verbosity of the logs can be increased by setting the AD_LOG environment variable to
+    "debug" or "trace" before starting ad. This can be useful when tracking down issues with
+    configuration files or unexpected behavior.
+
+  Viewing the Edit Log
+    The edit log tracks all changes made to the current buffer as a series of transactions.
+    You can view this log by pressing Alt-# in NORMAL mode, which can help you understand the
+    undo/redo history and diagnose issues with editing operations.
+
+  Tree-Sitter Parse Trees
+    If you have tree-sitter syntax highlighting enabled for the current buffer, you can view
+    the parse tree by running the 'ts-show-tree' command. This will open a buffer showing the
+    hierarchical structure of the parsed syntax tree, which can be useful for debugging syntax
+    highlighting issues or understanding how tree-sitter is interpreting your code.
 
 ---

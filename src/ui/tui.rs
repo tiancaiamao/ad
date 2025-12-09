@@ -130,8 +130,10 @@ impl<W: Write> GenericTui<W> {
         let effective_screen_rows = self.frame.screen_rows.saturating_sub(offset);
 
         let load_exec_range = match held_click {
-            Some(click) if click.btn == MouseButton::Right || click.btn == MouseButton::Middle => {
-                Some((click.btn == MouseButton::Right, click.selection))
+            Some(Click::Text { btn, selection, .. })
+                if *btn == MouseButton::Right || *btn == MouseButton::Middle =>
+            {
+                Some((*btn == MouseButton::Right, *selection))
             }
             _ => None,
         };
@@ -403,11 +405,16 @@ impl Frame {
         self.status_bar.clear();
 
         let lstatus = format!(
-            "{} {} - {} lines {}",
+            "{} {} - {} lines {}{}",
             mode_name,
             b.display_name(),
             b.len_lines(),
-            if b.dirty { "[+]" } else { "" }
+            if b.dirty { "[+]" } else { "" },
+            if !b.has_trailing_newline() {
+                "[noeol]"
+            } else {
+                ""
+            }
         );
         let rstatus = format!(
             "{}{}",

@@ -642,6 +642,8 @@ where
             LspReferences => self
                 .lsp_manager
                 .find_references(self.layout.active_buffer_ignoring_scratch()),
+            LspRename => self.lsp_rename(),
+            LspRenamePrepare => self.prepare_lsp_rename(),
             MarkClean { bufid } => self.mark_clean(bufid),
             MbSelect(selector) => selector.run(self),
             NewEditLogTransaction => self.layout.active_buffer_mut().new_edit_log_transaction(),
@@ -690,8 +692,9 @@ where
             ResizeActiveWindow { delta } => self.layout.resize_active_window(delta),
             RunMode => self.run_mode(),
             SamMode => self.sam_mode(),
-            SaveBufferAs { path, force } => self.save_current_buffer(Some(path), force),
             SaveBuffer { force } => self.save_current_buffer(None, force),
+            SaveBufferAll { force } => self.save_all_buffers(force),
+            SaveBufferAs { path, force } => self.save_current_buffer(Some(path), force),
             SearchInCurrentBuffer => self.search_in_current_buffer(),
             SendKeys { ks } => self.handle_explicit_inputs(ks),
             SelectBuffer => self.select_buffer(),
