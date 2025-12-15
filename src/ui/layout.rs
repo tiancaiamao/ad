@@ -1060,6 +1060,32 @@ impl Layout {
         assert_invariants!(self);
     }
 
+    /// Scroll the currently focused window by the specified amount
+    pub(crate) fn scroll_focused_window(&mut self, up: bool, scroll_rows: usize) {
+        self.changed_since_last_render = true;
+        let tabstop = config_handle!(self).tabstop;
+
+        if self.scratch.is_focused {
+            apply_scroll(
+                self.scratch.b.buffer_mut(),
+                &mut self.scratch.w,
+                self.screen_cols,
+                tabstop,
+                true, // focused
+                up,
+                scroll_rows,
+            );
+        } else {
+            let n_cols = self.cols.focus.n_cols;
+            let win = &mut self.cols.focus.wins.focus;
+            let b = self.buffers.with_id_mut(win.view.bufid).unwrap();
+            apply_scroll(b, win, n_cols, tabstop, true, up, scroll_rows);
+        }
+
+        #[cfg(test)]
+        assert_invariants!(self);
+    }
+
     /// Coordinate offsets from the top left of the window layout to the top left of the active window.
     fn xy_offsets(&self) -> (usize, usize) {
         if self.scratch.is_focused {

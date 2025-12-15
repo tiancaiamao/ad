@@ -788,9 +788,8 @@ where
             FullPage => self.layout.active_window_rows(),
         };
 
-        // Use the existing scroll_view method to perform the scroll
-        // We use coordinates (0, 0) to target the active window
-        self.layout.scroll_view(0, 0, up, scroll_rows);
+        // Handle focused window correctly, similar to set_viewport
+        self.layout.scroll_focused_window(up, scroll_rows);
     }
 }
 
