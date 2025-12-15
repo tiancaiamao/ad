@@ -38,7 +38,10 @@ pub use actions::Action;
 pub use minibuffer::MiniBufferState;
 pub use mouse::Click;
 
-pub(crate) use actions::{Actions, ScrollAmount, ViewPort};
+#[cfg(feature = "fuzz")]
+pub use commands::parse_command_fuzz;
+
+pub(crate) use actions::{Actions, ViewPort, ScrollAmount};
 pub(crate) use built_in_commands::built_in_commands;
 pub(crate) use minibuffer::{MbSelect, MbSelector, MiniBufferSelection};
 
@@ -370,7 +373,7 @@ where
     }
 
     pub(crate) fn block_for_input(&mut self) -> Vec<Input> {
-        loop {
+        while self.running {
             match self.rx_events.recv().unwrap() {
                 Event::Input(i) => return vec![i],
                 Event::BracketedPaste(s) => return s.chars().map(Input::Char).collect(),
@@ -381,6 +384,8 @@ where
                 Event::WinsizeChanged { rows, cols } => self.update_window_size(rows, cols),
             }
         }
+
+        Vec::new()
     }
 
     fn send_buffer_resp(

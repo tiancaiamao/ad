@@ -143,7 +143,11 @@ fn run_9p(aname: String, action: Cmd9p, path: String) {
 
 fn run_9p_command(action: Cmd9p, path: &str, mut client: UnixClient) -> io::Result<()> {
     match action {
-        Cmd9p::Read => print!("{}", client.read_str(path)?),
+        Cmd9p::Read => {
+            for line in client.iter_lines(path)? {
+                println!("{line}");
+            }
+        }
 
         Cmd9p::Write => {
             let mut content = String::new();
@@ -239,9 +243,11 @@ fn remove_open_sockets() {
     fn inner() -> io::Result<()> {
         let d = socket_dir();
         for ns in open_9p_sockets()?.into_iter() {
-            let path = d.join(ns);
-            println!("removing {}", path.display());
-            fs::remove_file(path)?;
+            if UnixClient::new_unix(&ns, "").is_err() {
+                let path = d.join(ns);
+                println!("removing unresponsive ad socket at {}", path.display());
+                fs::remove_file(path)?;
+            }
         }
 
         Ok(())

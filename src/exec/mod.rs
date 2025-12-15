@@ -26,7 +26,8 @@ mod runner;
 
 pub use runner::SystemRunner;
 
-pub(crate) use addr::{Addr, AddrBase, Address};
+pub(crate) use addr::Address;
+pub use addr::{Addr, AddrBase, SimpleAddr};
 pub(crate) use runner::{EditorRunner, Runner};
 
 use addr::ErrorKind;
@@ -52,6 +53,8 @@ pub enum Error {
     UnclosedDelimiter(&'static str, char),
     /// Unexpected character
     UnexpectedCharacter(char),
+    /// Unexpected end of file
+    UnexpectedEof,
     /// A 0 was provided as a line or column index
     ZeroIndexedLineOrColumn,
 }
@@ -164,13 +167,14 @@ impl Program {
             Err(e) => match e.kind {
                 ErrorKind::NotAnAddress => (None, s),
                 ErrorKind::InvalidRegex(e) => return Err(Error::InvalidRegex(e)),
+                ErrorKind::InvalidSuffix => return Err(Error::InvalidSuffix),
                 ErrorKind::UnclosedDelimiter => {
                     return Err(Error::UnclosedDelimiter("dot expr regex", '/'));
                 }
                 ErrorKind::UnexpectedCharacter(c) => {
                     return Err(Error::UnexpectedCharacter(c));
                 }
-                ErrorKind::InvalidSuffix => return Err(Error::InvalidSuffix),
+                ErrorKind::UnexpectedEof => return Err(Error::UnexpectedEof),
                 ErrorKind::ZeroIndexedLineOrColumn => {
                     return Err(Error::ZeroIndexedLineOrColumn);
                 }
@@ -905,6 +909,59 @@ mod tests {
     fn try_parse_zero_indexed_line_or_column_returns_error(input: &str) {
         let res = Program::try_parse(input);
         assert!(matches!(res, Err(Error::ZeroIndexedLineOrColumn)));
+    }
+
+    #[test_case("#,5"; "incomplete char addr in compound start")]
+    #[test_case("+#,10"; "incomplete relative char in compound start")]
+    #[test_case("-#,"; "incomplete relative char back in compound")]
+    #[test_case("#"; "char addr at eof")]
+    #[test_case("+#"; "relative char forward at eof")]
+    #[test_case("-#"; "relative char back at eof")]
+    #[test]
+    fn try_parse_malformed_leading_address_returns_error(addr: &str) {
+        let res = Program::try_parse(&format!("{addr} x/../ d"));
+        assert!(res.is_err(), "expected error, got {res:?}");
+    }
+
+    #[test_case(","; "omitted start defaults to bof")]
+    #[test_case(",5"; "omitted start with line end")]
+    #[test_case(",/foo/"; "omitted start with regex end")]
+    #[test_case(",$"; "omitted start with eof")]
+    #[test]
+    fn try_parse_omitted_leading_address_works(addr: &str) {
+        let res = Program::try_parse(&format!("{addr} x/../ d"));
+        assert!(res.is_ok(), "expected OK, got {res:?}");
+        assert!(res.unwrap().initial_addr.is_some());
+    }
+
+    #[test_case("#"; "char addr incomplete")]
+    #[test_case("+#"; "relative char forward incomplete")]
+    #[test_case("-#"; "relative char back incomplete")]
+    #[test]
+    fn try_parse_unexpected_eof_returns_error(addr: &str) {
+        let res = Program::try_parse(&format!("{addr} x/../ d"));
+        // The exact error we get here depends on how the address is malformed. We deliberately
+        // swallow "NotAnAddress" and try to parse the full input as a Structex if possible.
+        assert!(res.is_err(), "expected error, got {res:?}");
+    }
+
+    #[test_case("x/foo/ d"; "x")]
+    #[test_case("y/bar/ c/X/"; "y")]
+    #[test_case("d"; "d")]
+    #[test]
+    fn try_parse_no_leading_address_with_action_works(input: &str) {
+        let res = Program::try_parse(input);
+        assert!(res.is_ok(), "expected OK, got {res:?}");
+        assert!(res.unwrap().initial_addr.is_none());
+    }
+
+    #[test_case("5,#"; "incomplete char end")]
+    #[test_case("/foo/,+#"; "incomplete relative char end")]
+    #[test_case("1,#abc"; "char with non-digit")]
+    #[test]
+    fn try_parse_malformed_trailing_address_returns_error(addr: &str) {
+        let res = Program::try_parse(&format!("{addr} x/../ d"));
+        assert!(res.is_err(), "expected error, got {res:?}");
     }
 
     #[test_case(", x/foo/ c/{0/"; "change action unclosed submatch")]

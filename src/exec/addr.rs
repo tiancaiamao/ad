@@ -34,6 +34,7 @@ pub enum ErrorKind {
     NotAnAddress,
     UnclosedDelimiter,
     UnexpectedCharacter(char),
+    UnexpectedEof,
     ZeroIndexedLineOrColumn,
 }
 
@@ -45,6 +46,7 @@ impl fmt::Display for ErrorKind {
             Self::NotAnAddress => write!(f, "not an address"),
             Self::UnclosedDelimiter => write!(f, "unclosed delimiter"),
             Self::UnexpectedCharacter(c) => write!(f, "unexpected character {c:?}"),
+            Self::UnexpectedEof => write!(f, "unexpecterd EOF"),
             Self::ZeroIndexedLineOrColumn => write!(f, "zero indexed line or column"),
         }
     }
@@ -179,7 +181,7 @@ impl<'a> Parser<'a> {
     fn parse(&self) -> Result<Addr, Error> {
         let start = match self.parse_simple() {
             Ok(addr) => Some(addr),
-            Err(e) if e.kind == ErrorKind::NotAnAddress => None,
+            Err(e) if self.input.at_bof() && self.input.try_char() == Some(',') => None,
             Err(e) => return Err(e),
         };
 
@@ -193,10 +195,16 @@ impl<'a> Parser<'a> {
             // Compound addrs default their first element to Bof and last to Eof
             self.input.advance(); // consume the ','
             let start = start.unwrap_or(AddrBase::Bof.into());
-            let end = match self.parse_simple() {
-                Ok(addr) => addr,
-                Err(e) if e.kind == ErrorKind::NotAnAddress => AddrBase::Eof.into(),
-                Err(e) => return Err(e),
+            let next_is_eof_or_whitespace = self
+                .input
+                .try_char()
+                .map(|ch| ch.is_whitespace())
+                .unwrap_or(true);
+
+            let end = if next_is_eof_or_whitespace {
+                AddrBase::Eof.into()
+            } else {
+                self.parse_simple()?
             };
 
             Ok(Addr::Compound(start, end))
@@ -229,7 +237,7 @@ impl<'a> Parser<'a> {
 
     fn parse_base(&self) -> Result<AddrBase, Error> {
         if self.input.at_eof() {
-            return Err(self.error(ErrorKind::NotAnAddress));
+            return Err(self.error(ErrorKind::UnexpectedEof));
         }
 
         let dir = match self.input.char() {
@@ -277,11 +285,11 @@ impl<'a> Parser<'a> {
 
             ('#', dir) => {
                 self.input.advance();
-                if !self.input.char().is_ascii_digit() {
+                if self.input.at_eof() || !self.input.char().is_ascii_digit() {
                     return Err(self.error(ErrorKind::NotAnAddress));
                 }
 
-                let ix = self.parse_num();
+                let ix = self.try_parse_num()?;
                 match dir {
                     None => Ok(AddrBase::Char(ix)),
                     Some(Dir::Fwd) => Ok(AddrBase::RelativeChar(ix as isize)),
@@ -290,7 +298,7 @@ impl<'a> Parser<'a> {
             }
 
             (c, dir) if c.is_ascii_digit() => {
-                let line = self.parse_num();
+                let line = self.try_parse_num()?;
                 if line == 0 {
                     return Err(self.error(ErrorKind::ZeroIndexedLineOrColumn));
                 }
@@ -305,7 +313,7 @@ impl<'a> Parser<'a> {
                         } else if !self.input.char().is_ascii_digit() {
                             Err(self.error(ErrorKind::UnexpectedCharacter(self.input.char())))
                         } else {
-                            match self.parse_num() {
+                            match self.try_parse_num()? {
                                 0 => Err(self.error(ErrorKind::ZeroIndexedLineOrColumn)),
                                 col => Ok(AddrBase::LineAndColumn(line - 1, col - 1)),
                             }
@@ -327,7 +335,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_num(&self) -> usize {
+    fn try_parse_num(&self) -> Result<usize, Error> {
         assert!(self.input.char().is_ascii_digit());
         let mut s = self.input.char().to_string();
         self.input.advance();
@@ -340,7 +348,7 @@ impl<'a> Parser<'a> {
             self.input.advance();
         }
 
-        s.parse().unwrap()
+        s.parse().map_err(|_| self.error(ErrorKind::NotAnAddress))
     }
 
     fn parse_delimited_regex(&self, dir: Dir) -> Result<AddrBase, Error> {
@@ -668,5 +676,30 @@ mod tests {
 
         assert_eq!(b.dot, expected, ">{}<", b.dot_contents());
         assert_eq!(b.dot_contents(), expected_contents);
+    }
+
+    #[test_case("99999999999999999999"; "line number overflow")]
+    #[test_case("#99999999999999999999"; "char index overflow")]
+    #[test_case("+#99999999999999999999"; "relative char forward overflow")]
+    #[test_case("-#99999999999999999999"; "relative char back overflow")]
+    #[test_case("5:99999999999999999999"; "column number overflow")]
+    #[test_case("99999999999999999999,100"; "range start overflow")]
+    #[test_case("1,99999999999999999999"; "range end overflow")]
+    #[test_case("99999999999999999999:5"; "line in line col overflow")]
+    #[test]
+    fn giant_address_integers_error(s: &str) {
+        let res = Addr::parse(s);
+        assert!(res.is_err(), "expected error, got {res:?}");
+    }
+
+    #[test_case("#"; "char address at eof")]
+    #[test_case("1,#"; "compound with eof after hash")]
+    #[test_case("#,5"; "compound with incomplete char start")]
+    #[test_case("+#"; "relative forward at eof")]
+    #[test_case("-#"; "relative back at eof")]
+    #[test]
+    fn incomplete_char_addresses_error(s: &str) {
+        let res = Addr::parse(s);
+        assert!(res.is_err(), "expected error, got {res:?}");
     }
 }

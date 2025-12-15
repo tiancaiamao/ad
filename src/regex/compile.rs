@@ -321,16 +321,21 @@ fn strip_unreachable_instructions(ops: &mut Vec<Op>) {
             continue;
         }
 
-        for &(to, from) in to_from.iter() {
-            if to > i {
-                match &mut ops[from] {
+        for (to, from) in to_from.iter_mut() {
+            if *to > i {
+                match &mut ops[*from] {
                     Op::Jump(x) => *x -= 1,
                     Op::Split(x, _) if *x > i => *x -= 1,
                     Op::Split(_, x) if *x > i => *x -= 1,
                     _ => (),
                 }
             }
+
+            if *from > i {
+                *from -= 1;
+            }
         }
+
         ops.remove(i);
     }
 }
@@ -403,5 +408,18 @@ mod tests {
         full.extend([sv(1), Op::Match]);
 
         assert_eq!(prog, full);
+    }
+
+    #[test_case("(a*)*b"; "nested star")]
+    #[test_case("((a|b)*)*c"; "nested alternation star")]
+    #[test_case("(a+|b+)*c"; "alternation of plus star")]
+    #[test_case("((a*b*)*c*)*d"; "deeply nested stars")]
+    #[test_case("(((x|y)*z*)*w*)*v"; "complex nested pattern")]
+    #[test]
+    fn stripping_nested_ops_doesnt_panic(re: &str) {
+        let ast = parse(re).unwrap();
+        let compiled = compile_ast(ast, false);
+        // This used to panic when tracking the removed op indices was incorrect
+        let _optimized = optimise(compiled.ops);
     }
 }

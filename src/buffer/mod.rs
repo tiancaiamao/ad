@@ -379,13 +379,23 @@ impl Buffer {
         };
         let n_bytes = contents.len();
 
-        match fs::write(path, contents) {
-            Ok(_) => {
-                self.dirty = false;
-                self.last_save = SystemTime::now();
-                Ok(format!("\"{display_path}\" {n_lines}L {n_bytes}B written"))
+        #[cfg(not(feature = "fuzz"))]
+        {
+            match fs::write(path, contents) {
+                Ok(_) => {
+                    self.dirty = false;
+                    self.last_save = SystemTime::now();
+                    Ok(format!("\"{display_path}\" {n_lines}L {n_bytes}B written"))
+                }
+                Err(e) => Err(format!("Unable to save buffer: {e}")),
             }
-            Err(e) => Err(format!("Unable to save buffer: {e}")),
+        }
+
+        #[cfg(feature = "fuzz")]
+        {
+            self.dirty = false;
+            self.last_save = SystemTime::now();
+            Ok(format!("\"{display_path}\" {n_lines}L {n_bytes}B written"))
         }
     }
 
@@ -1290,11 +1300,8 @@ impl Buffer {
     }
 
     fn delete_range(&mut self, r: Range, source: Option<Source>) -> (Cur, Option<String>) {
-        let (from, to) = if r.start.idx != r.end.idx {
-            (r.start.idx, min(r.end.idx + 1, self.txt.len_chars()))
-        } else {
-            return (r.start, None);
-        };
+        let (from, to) = (r.start.idx, min(r.end.idx + 1, self.txt.len_chars()));
+        let is_single_char = r.start.idx == r.end.idx;
 
         let s = self.txt.slice(from, to).to_string();
         self.txt.remove_range(from, to);
@@ -1307,7 +1314,9 @@ impl Buffer {
         self.mark_dirty();
         self.changed_since_last_render = true;
 
-        (r.start, Some(s))
+        let deleted = if is_single_char { None } else { Some(s) };
+
+        (r.start, deleted)
     }
 
     pub(crate) fn find_forward(&mut self, s: &str) {
@@ -1575,6 +1584,17 @@ pub(crate) mod tests {
                 del_s(LINE_1.len() + 1, "involving multiple lines")
             ]]
         );
+    }
+
+    #[test]
+    fn delete_range_when_start_equals_end_works() {
+        let mut b = Buffer::new_unnamed(0, "foo", Default::default());
+        let (cur, deleted) =
+            b.delete_range(Range::from_cursors(Cur::new(0), Cur::new(0), false), None);
+
+        assert_eq!(b.str_contents(), "oo");
+        assert_eq!(cur, Cur::new(0));
+        assert_eq!(deleted, None);
     }
 
     #[test]
