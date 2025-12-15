@@ -38,7 +38,7 @@ pub use actions::Action;
 pub use minibuffer::MiniBufferState;
 pub use mouse::Click;
 
-pub(crate) use actions::{Actions, ViewPort};
+pub(crate) use actions::{Actions, ScrollAmount, ViewPort};
 pub(crate) use built_in_commands::built_in_commands;
 pub(crate) use minibuffer::{MbSelect, MbSelector, MiniBufferSelection};
 
@@ -701,6 +701,7 @@ where
             SetMode { m } => self.set_mode(m),
             SetStatusMessage { message } => self.set_status_message(&message),
             SetViewPort(vp) => self.layout.set_viewport(vp),
+            Scroll { direction, amount } => self.scroll(direction, amount),
             ShellPipe { cmd } => self.pipe_dot_through_shell_cmd(&cmd),
             ShellReplace { cmd } => self.replace_dot_with_shell_cmd(&cmd),
             ShellRun { cmd } => self.run_shell_cmd(&cmd),
@@ -769,6 +770,22 @@ where
                 ActionOutcome::SetClipboard(s) => self.set_clipboard(s),
             }
         }
+    }
+
+    /// Scroll the viewport by the specified direction and amount
+    fn scroll(&mut self, direction: Arrow, amount: ScrollAmount) {
+        use ScrollAmount::*;
+
+        let up = matches!(direction, Arrow::Up);
+        let scroll_rows = match amount {
+            Line(n) => n,
+            HalfPage => self.layout.active_window_rows() / 2,
+            FullPage => self.layout.active_window_rows(),
+        };
+
+        // Use the existing scroll_view method to perform the scroll
+        // We use coordinates (0, 0) to target the active window
+        self.layout.scroll_view(0, 0, up, scroll_rows);
     }
 }
 

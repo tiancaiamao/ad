@@ -1,7 +1,7 @@
 //! vim style normal mode
 use crate::{
     dot::TextObject::*,
-    editor::{Action::*, Actions, ViewPort},
+    editor::{Action::*, Actions, ScrollAmount, ViewPort},
     key::{Arrow::*, Input::*},
     keymap,
     mode::Mode,
@@ -75,10 +75,8 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         // >> line anchors
         "move to start of line";
         [ Char('^') ] => [ DotSet(LineStart, 1) ],
-        // [ Ctrl('h') ] => [ DotSet(LineStart, 1) ],
         "move to end of line";
         [ Char('$') ] => [ DotSet(LineEnd, 1) ],
-        // [ Ctrl('l') ] => [ DotSet(LineEnd, 1) ],
         "move to start of line";
         [ Home ] => [ DotSet(LineStart, 1) ],
         "move to end of line";
@@ -177,6 +175,14 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         [ Char('z'), Char('z') ] => [ SetViewPort(ViewPort::Center) ],
         "set viewport to bottom";
         [ Char('z'), Char('b') ] => [ SetViewPort(ViewPort::Bottom) ],
+        "scroll half page down";
+        [ Ctrl('d') ] => [ Scroll { direction: Down, amount: ScrollAmount::HalfPage } ],
+        "scroll half page up";
+        [ Ctrl('u') ] => [ Scroll { direction: Up, amount: ScrollAmount::HalfPage } ],
+        "scroll line down";
+        [ Ctrl('e') ] => [ Scroll { direction: Down, amount: ScrollAmount::Line(1) } ],
+        "scroll line up";
+        [ Ctrl('y') ] => [ Scroll { direction: Up, amount: ScrollAmount::Line(1) } ],
 
         // Window manipulation
         "focus previous window in column";

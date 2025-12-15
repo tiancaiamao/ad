@@ -41,47 +41,92 @@ pub enum ViewPort {
     Top,
 }
 
+/// Amount to scroll
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScrollAmount {
+    Line(usize),
+    HalfPage,
+    FullPage,
+}
+
 /// Supported actions for interacting with the editor state
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Noop,
 
-    AppendToOutputBuffer { bufid: usize, content: String },
+    AppendToOutputBuffer {
+        bufid: usize,
+        content: String,
+    },
     BalanceActiveColumn,
     BalanceAll,
     BalanceColumns,
     BalanceWindows,
-    ChangeDirectory { path: Option<String> },
-    CleanupChild { id: u32 },
+    ChangeDirectory {
+        path: Option<String>,
+    },
+    CleanupChild {
+        id: u32,
+    },
     ClearScratch,
     CommandMode,
     Delete,
-    DeleteBuffer { force: bool },
-    DeleteColumn { force: bool },
-    DeleteWindow { force: bool },
+    DeleteBuffer {
+        force: bool,
+    },
+    DeleteColumn {
+        force: bool,
+    },
+    DeleteWindow {
+        force: bool,
+    },
     DotCollapseFirst,
     DotCollapseLast,
     DotExtendBackward(TextObject, usize),
     DotExtendForward(TextObject, usize),
     DotFlip,
     DotSet(TextObject, usize),
-    DotSetFromCoords { coords: Coords },
-    DragWindow { direction: Arrow },
-    EditCommand { cmd: String },
-    EnsureFileIsOpen { path: String },
+    DotSetFromCoords {
+        coords: Coords,
+    },
+    DragWindow {
+        direction: Arrow,
+    },
+    EditCommand {
+        cmd: String,
+    },
+    EnsureFileIsOpen {
+        path: String,
+    },
     ExecuteDot,
-    ExecuteString { s: String },
-    Exit { force: bool },
+    ExecuteString {
+        s: String,
+    },
+    Exit {
+        force: bool,
+    },
     ExpandDot,
-    FindFile { new_window: bool },
-    FindRepoFile { new_window: bool },
-    FocusBuffer { id: usize },
-    InsertChar { c: char },
-    InsertString { s: String },
+    FindFile {
+        new_window: bool,
+    },
+    FindRepoFile {
+        new_window: bool,
+    },
+    FocusBuffer {
+        id: usize,
+    },
+    InsertChar {
+        c: char,
+    },
+    InsertString {
+        s: String,
+    },
     JumpListForward,
     JumpListBack,
     KillRunningChild,
-    LoadDot { new_window: bool },
+    LoadDot {
+        new_window: bool,
+    },
     LspCompletion,
     LspFormat,
     LspGotoDeclaration,
@@ -95,7 +140,9 @@ pub enum Action {
     LspShowDiagnostics,
     LspStart,
     LspStop,
-    MarkClean { bufid: usize },
+    MarkClean {
+        bufid: usize,
+    },
     MbSelect(MbSelector),
     NewEditLogTransaction,
     NewColumn,
@@ -103,45 +150,97 @@ pub enum Action {
     NextBuffer,
     NextColumn,
     NextWindowInColumn,
-    OpenFile { path: String },
-    OpenFileInNewWindow { path: String },
-    OpenTransientScratch { name: String, txt: String },
-    OpenVirtualFile { name: String, txt: String },
+    OpenFile {
+        path: String,
+    },
+    OpenFileInNewWindow {
+        path: String,
+    },
+    OpenTransientScratch {
+        name: String,
+        txt: String,
+    },
+    OpenVirtualFile {
+        name: String,
+        txt: String,
+    },
     Paste,
-    Plumb { txt: String, new_window: bool },
+    Plumb {
+        txt: String,
+        new_window: bool,
+    },
     PreviousBuffer,
     PreviousColumn,
     PreviousWindowInColumn,
-    RawInput { i: Input },
+    RawInput {
+        i: Input,
+    },
     Redo,
     ReloadActiveBuffer,
-    ReloadBuffer { id: usize },
+    ReloadBuffer {
+        id: usize,
+    },
     ReloadConfig,
-    RenameActiveBuffer { name: String },
-    ResizeActiveColumn { delta: i16 },
-    ResizeActiveWindow { delta: i16 },
+    RenameActiveBuffer {
+        name: String,
+    },
+    ResizeActiveColumn {
+        delta: i16,
+    },
+    ResizeActiveWindow {
+        delta: i16,
+    },
     RunMode,
     SamMode,
-    SaveBuffer { force: bool },
-    SaveBufferAll { force: bool },
-    SaveBufferAs { path: String, force: bool },
+    SaveBuffer {
+        force: bool,
+    },
+    SaveBufferAll {
+        force: bool,
+    },
+    SaveBufferAs {
+        path: String,
+        force: bool,
+    },
     SearchInCurrentBuffer,
-    SendKeys { ks: Vec<Input> },
+    SendKeys {
+        ks: Vec<Input>,
+    },
     SelectBuffer,
     SetViewPort(ViewPort),
-    SetMode { m: &'static str },
-    SetStatusMessage { message: String },
-    ShellPipe { cmd: String },
-    ShellReplace { cmd: String },
-    ShellRun { cmd: String },
-    ShellSend { cmd: String },
+    Scroll {
+        direction: Arrow,
+        amount: ScrollAmount,
+    },
+    SetMode {
+        m: &'static str,
+    },
+    SetStatusMessage {
+        message: String,
+    },
+    ShellPipe {
+        cmd: String,
+    },
+    ShellReplace {
+        cmd: String,
+    },
+    ShellRun {
+        cmd: String,
+    },
+    ShellSend {
+        cmd: String,
+    },
     ShowHelp,
     ToggleScratch,
     TsShowTree,
     Undo,
     ViewLogs,
-    XDotSetFromCoords { coords: Coords },
-    XInsertString { s: String },
+    XDotSetFromCoords {
+        coords: Coords,
+    },
+    XInsertString {
+        s: String,
+    },
     Yank,
 
     DebugBufferContents,
