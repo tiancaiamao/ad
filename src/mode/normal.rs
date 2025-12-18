@@ -20,7 +20,7 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
 
         // Modes
         "dynamic buffer select";
-        [ leader, Char('b') ] => [ SelectBuffer ],
+        [ leader, Char('b'), Char('b') ] => [ SelectBuffer ],
         "search in current buffer";
         [ Char('/') ] => [ SearchInCurrentBuffer ],
         "toggle the visibility of the scratch buffer";
