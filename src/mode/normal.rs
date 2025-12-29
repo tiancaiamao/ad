@@ -256,13 +256,53 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         cur_shape: CurShape::Block,
         keymap,
         handle_expired_pending: |keys| {
-            if keys.len() > 1 {
-                return None;
+            if keys.len() == 1 {
+                let i = keys[0];
+                return match i {
+                    Mouse(_) | Arrow(_) | PageUp | PageDown => Some(Actions::Single(RawInput { i })),
+                    _ => None,
+                };
             }
-            let i = keys[0];
-            match i {
-                Mouse(_) | Arrow(_) | PageUp | PageDown => Some(Actions::Single(RawInput { i })),
-                _ => None,
+
+            // Handle f/F/t/T + char for find character
+            if keys.len() == 2 {
+                if let (first, Char(ch)) = (keys[0], keys[1]) {
+                    return match first {
+                        // f - find character forward
+                        Char('f') => Some(Actions::Multi(vec![
+                            DotExtendForward(FindChar(ch), 1),
+                            DotCollapseLast,
+                        ])),
+                        // F - find character backward
+                        Char('F') => Some(Actions::Multi(vec![
+                            DotExtendBackward(FindChar(ch), 1),
+                            DotCollapseFirst,
+                        ])),
+                        // t - find character forward (stop before)
+                        Char('t') => Some(Actions::Multi(vec![
+                            DotExtendForward(FindChar(ch), 1),
+                            DotExtendBackward(Character, 1),
+                            DotCollapseLast,
+                        ])),
+                        // T - find character backward (stop after)
+                        Char('T') => Some(Actions::Multi(vec![
+                            DotExtendBackward(FindChar(ch), 1),
+                            DotExtendForward(Character, 1),
+                            DotCollapseFirst,
+                        ])),
+                        _ => None,
+                    };
+                }
+            }
+
+            None
+        },
+        // Wait for more input when f/F/t/T is pressed alone
+        should_wait_for_more: |keys| {
+            if keys.len() == 1 {
+                matches!(keys[0], Char('f') | Char('F') | Char('t') | Char('T'))
+            } else {
+                false
             }
         },
     };

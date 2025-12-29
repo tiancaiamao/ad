@@ -59,6 +59,7 @@ pub(crate) fn insert_mode() -> (Mode, Vec<(String, &'static str)>) {
                 Actions::Multi(keys.iter().map(|&i| RawInput { i }).collect())
             })
         },
+        should_wait_for_more: |_| false,
     };
 
     (mode, docs)

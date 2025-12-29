@@ -41,6 +41,8 @@ pub(crate) struct Mode {
     pub(crate) cur_shape: CurShape,
     pub(crate) keymap: Trie<Input, Actions>,
     handle_expired_pending: fn(&[Input]) -> Option<Actions>,
+    /// Check if a key sequence should wait for more input even if not in keymap
+    should_wait_for_more: fn(&[Input]) -> bool,
 }
 
 impl fmt::Display for Mode {
@@ -56,6 +58,7 @@ impl Mode {
             cur_shape: CurShape::Block,
             keymap: Trie::try_from_iter(Vec::new()).unwrap(),
             handle_expired_pending: |_| None,
+            should_wait_for_more: |_| false,
         }
     }
 
@@ -73,6 +76,10 @@ impl Mode {
             }
             QueryResult::Partial => None,
             QueryResult::Missing => {
+                // Check if we should wait for more input (e.g., f/F/t/T + char)
+                if (self.should_wait_for_more)(keys) {
+                    return None;
+                }
                 let res = (self.handle_expired_pending)(keys);
                 keys.clear();
                 res
