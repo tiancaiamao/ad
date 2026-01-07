@@ -73,3 +73,10 @@ new-issue:
 # Open an new GitHub PR using gh
 pr:
 	gh pr create
+
+# Build win Go program
+build-win:
+	cd win && go build -o ~/.ad/bin/win ./...
+
+# Install win (includes build-win)
+install-win: build-win

@@ -492,9 +492,12 @@ where
                 b.clear();
             }),
 
-            AppendBufferBody { id, s } => self.handle_buffer_mutation(id, tx, s, |b, s| {
-                b.append(s, Source::Fsys);
-            }),
+            AppendBufferBody { id, s } => {
+                debug!("AppendBufferBody: id={}, len={}", id, s.len());
+                self.handle_buffer_mutation(id, tx, s, |b, s| {
+                    b.append(s, Source::Fsys);
+                });
+            }
 
             AppendOutput { id, s } => {
                 self.layout.write_output_for_buffer(id, s, &self.cwd);
