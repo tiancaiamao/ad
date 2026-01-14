@@ -17,7 +17,7 @@ mod text_object;
 
 pub use cur::Cur;
 pub use range::Range;
-pub use text_object::TextObject;
+pub use text_object::{FindDelimited, TextObject};
 
 /// A Dot represents the currently selected contents of a Buffer.
 ///

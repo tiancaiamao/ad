@@ -605,7 +605,7 @@ where
             FocusBuffer { id } => self.focus_buffer(id, false), // allow focusing another window
             JumpListForward => self.jump_forward(),
             JumpListBack => self.jump_backward(),
-            KillRunningChild => self.kill_running_child(),
+            JumpToMatchingBracket => self.jump_to_matching_bracket(),
             LoadDot { new_window } => self.default_load_dot(source, new_window),
             LspShowCapabilities => {
                 if let Some((name, txt)) = self
@@ -780,7 +780,75 @@ where
         }
     }
 
-    /// Scroll the viewport by the specified direction and amount
+    /// Jump to matching bracket at current cursor position
+    fn jump_to_matching_bracket(&mut self) {
+        let b = self.layout.active_buffer_mut_ignoring_scratch();
+        let current_idx = b.dot.active_cur().idx;
+        
+        // Boundary check
+        if current_idx >= b.txt.len_chars() {
+            return;
+        }
+        
+        let current_char = b.txt.char(current_idx);
+        
+        // Determine bracket type and search direction
+        let (left_bracket, right_bracket, _search_backward) = match current_char {
+            '(' => ('(', ')', false),
+            ')' => ('(', ')', true),
+            '[' => ('[', ']', false),
+            ']' => ('[', ']', true),
+            '{' => ('{', '}', false),
+            '}' => ('{', '}', true),
+            '<' => ('<', '>', false),
+            '>' => ('>', '<', true),
+            _ => {
+                self.set_status_message("Cursor not on bracket character");
+                return;
+            }
+        };
+        
+        // Simple manual implementation using existing buffer iteration
+        if _search_backward {
+            // Search backward for matching opening bracket
+            let mut nesting = 0;
+            for i in (0..current_idx).rev() {
+                let ch = b.txt.char(i);
+                if ch == right_bracket {
+                    nesting += 1;
+                } else if ch == left_bracket {
+                    if nesting == 0 {
+                        b.set_dot_from_cursor(i);
+                        self.layout.clamp_scroll();
+                        self.layout.record_jump_position();
+                        return;
+                    }
+                    nesting -= 1;
+                }
+            }
+        } else {
+            // Search forward for matching closing bracket
+            let mut nesting = 0;
+            for i in (current_idx + 1)..b.txt.len_chars() {
+                let ch = b.txt.char(i);
+                if ch == right_bracket {
+                    if nesting == 0 {
+                        b.set_dot_from_cursor(i);
+                        self.layout.clamp_scroll();
+                        self.layout.record_jump_position();
+                        return;
+                    }
+                    nesting -= 1;
+                } else if ch == left_bracket {
+                    nesting += 1;
+                }
+            }
+        }
+        
+        self.set_status_message("No matching bracket found");
+    }
+
+    /// Scroll to viewport by a specified direction and amount
     fn scroll(&mut self, direction: Arrow, amount: ScrollAmount) {
         use ScrollAmount::*;
 
@@ -804,6 +872,28 @@ mod tests {
 
     // We need access to the internals of Editor for this but really this is a test of the
     // behaviour of the System trait and DefaultSystem.
+    #[test]
+    fn jump_to_matching_bracket_basic() {
+        let mut ed = Editor::new_with_system(
+                Config::default(),
+                PlumbingRules::default(),
+                EditorMode::Headless,
+                LogBuffer::default(),
+                DefaultSystem::without_clipboard_provider(),
+        );
+        
+        // Test basic ( to ) matching - function(test)
+        ed.layout.open_virtual("test", "function(test)", false);
+        ed.layout.active_buffer_mut_ignoring_scratch()
+                .set_dot_from_cursor(8); // Position on '('
+        
+        ed.handle_action(Action::JumpToMatchingBracket, Source::Keyboard);
+        
+        let actual_pos = ed.layout.active_buffer_ignoring_scratch()
+                .dot.active_cur().idx;
+        assert_eq!(actual_pos, 13, "Expected cursor at position 13 (')'), but got {}", actual_pos);
+    }
+
     #[test]
     fn process_control_works() {
         let mut ed = Editor::new_with_system(

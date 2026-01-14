@@ -123,6 +123,7 @@ pub enum Action {
     },
     JumpListForward,
     JumpListBack,
+    JumpToMatchingBracket,
     KillRunningChild,
     LoadDot {
         new_window: bool,
@@ -1048,7 +1049,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LogBuffer, PlumbingRules, editor::EditorMode};
+    use crate::{editor::EditorMode, LogBuffer, PlumbingRules};
     use simple_test_case::test_case;
 
     macro_rules! assert_recv {

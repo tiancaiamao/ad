@@ -2,8 +2,8 @@
 use crate::{
     buffer::Buffer,
     dot::{
+        find::{find_backward_start, find_forward_end, Find},
         Cur, Dot, Range,
-        find::{Find, find_backward_start, find_forward_end},
     },
     key::Arrow,
 };

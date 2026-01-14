@@ -90,8 +90,8 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         [ Char('x') ] => [ DotSet(Line, 1) ],
         "select current paragraph";
         [ Char('X') ] => [ DotSet(Paragraph, 1) ],
-        "select buffer";
-        [ Char('%') ] => [ DotSet(BufferStart, 1), DotExtendForward(BufferEnd, 1) ],
+        "jump to matching bracket";
+        [ Char('%') ] => [ JumpToMatchingBracket ],
         "move to end of paragraph";
         [ Char('{') ] => [ DotExtendBackward(Paragraph, 1), DotCollapseFirst ],
         "move to start of paragraph";
