@@ -7,7 +7,7 @@ foo
 bar
 baz
 -- actions --
-type: %
+type: <ctrl>a
 type: <alt>;
 type: i|sort
 type: <esc>

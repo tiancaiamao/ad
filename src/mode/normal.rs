@@ -90,6 +90,8 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         [ Char('x') ] => [ DotSet(Line, 1) ],
         "select current paragraph";
         [ Char('X') ] => [ DotSet(Paragraph, 1) ],
+        "select buffer";
+        [ Ctrl('a') ] => [ DotSet(BufferStart, 1), DotExtendForward(BufferEnd, 1) ],
         "jump to matching bracket";
         [ Char('%') ] => [ JumpToMatchingBracket ],
         "move to end of paragraph";
@@ -267,34 +269,34 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
             }
 
             // Handle f/F/t/T + char for find character
-            if keys.len() == 2 {
-                if let (first, Char(ch)) = (keys[0], keys[1]) {
-                    return match first {
-                        // f - find character forward
-                        Char('f') => Some(Actions::Multi(vec![
-                            DotExtendForward(FindChar(ch), 1),
-                            DotCollapseLast,
-                        ])),
-                        // F - find character backward
-                        Char('F') => Some(Actions::Multi(vec![
-                            DotExtendBackward(FindChar(ch), 1),
-                            DotCollapseFirst,
-                        ])),
-                        // t - find character forward (stop before)
-                        Char('t') => Some(Actions::Multi(vec![
-                            DotExtendForward(FindChar(ch), 1),
-                            DotExtendBackward(Character, 1),
-                            DotCollapseLast,
-                        ])),
-                        // T - find character backward (stop after)
-                        Char('T') => Some(Actions::Multi(vec![
-                            DotExtendBackward(FindChar(ch), 1),
-                            DotExtendForward(Character, 1),
-                            DotCollapseFirst,
-                        ])),
-                        _ => None,
-                    };
-                }
+            if keys.len() == 2
+                && let (first, Char(ch)) = (keys[0], keys[1])
+            {
+                return match first {
+                    // f - find character forward
+                    Char('f') => Some(Actions::Multi(vec![
+                        DotExtendForward(FindChar(ch), 1),
+                        DotCollapseLast,
+                    ])),
+                    // F - find character backward
+                    Char('F') => Some(Actions::Multi(vec![
+                        DotExtendBackward(FindChar(ch), 1),
+                        DotCollapseFirst,
+                    ])),
+                    // t - find character forward (stop before)
+                    Char('t') => Some(Actions::Multi(vec![
+                        DotExtendForward(FindChar(ch), 1),
+                        DotExtendBackward(Character, 1),
+                        DotCollapseLast,
+                    ])),
+                    // T - find character backward (stop after)
+                    Char('T') => Some(Actions::Multi(vec![
+                        DotExtendBackward(FindChar(ch), 1),
+                        DotExtendForward(Character, 1),
+                        DotCollapseFirst,
+                    ])),
+                    _ => None,
+                };
             }
 
             None

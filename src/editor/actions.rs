@@ -1049,7 +1049,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{editor::EditorMode, LogBuffer, PlumbingRules};
+    use crate::{LogBuffer, PlumbingRules, editor::EditorMode};
     use simple_test_case::test_case;
 
     macro_rules! assert_recv {

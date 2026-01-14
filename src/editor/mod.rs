@@ -606,6 +606,7 @@ where
             JumpListForward => self.jump_forward(),
             JumpListBack => self.jump_backward(),
             JumpToMatchingBracket => self.jump_to_matching_bracket(),
+            KillRunningChild => self.kill_running_child(),
             LoadDot { new_window } => self.default_load_dot(source, new_window),
             LspShowCapabilities => {
                 if let Some((name, txt)) = self
@@ -784,14 +785,14 @@ where
     fn jump_to_matching_bracket(&mut self) {
         let b = self.layout.active_buffer_mut_ignoring_scratch();
         let current_idx = b.dot.active_cur().idx;
-        
+
         // Boundary check
         if current_idx >= b.txt.len_chars() {
             return;
         }
-        
+
         let current_char = b.txt.char(current_idx);
-        
+
         // Determine bracket type and search direction
         let (left_bracket, right_bracket, _search_backward) = match current_char {
             '(' => ('(', ')', false),
@@ -807,7 +808,7 @@ where
                 return;
             }
         };
-        
+
         // Simple manual implementation using existing buffer iteration
         if _search_backward {
             // Search backward for matching opening bracket
@@ -844,7 +845,7 @@ where
                 }
             }
         }
-        
+
         self.set_status_message("No matching bracket found");
     }
 
@@ -875,23 +876,32 @@ mod tests {
     #[test]
     fn jump_to_matching_bracket_basic() {
         let mut ed = Editor::new_with_system(
-                Config::default(),
-                PlumbingRules::default(),
-                EditorMode::Headless,
-                LogBuffer::default(),
-                DefaultSystem::without_clipboard_provider(),
+            Config::default(),
+            PlumbingRules::default(),
+            EditorMode::Headless,
+            LogBuffer::default(),
+            DefaultSystem::without_clipboard_provider(),
         );
-        
+
         // Test basic ( to ) matching - function(test)
         ed.layout.open_virtual("test", "function(test)", false);
-        ed.layout.active_buffer_mut_ignoring_scratch()
-                .set_dot_from_cursor(8); // Position on '('
-        
+        ed.layout
+            .active_buffer_mut_ignoring_scratch()
+            .set_dot_from_cursor(8); // Position on '('
+
         ed.handle_action(Action::JumpToMatchingBracket, Source::Keyboard);
-        
-        let actual_pos = ed.layout.active_buffer_ignoring_scratch()
-                .dot.active_cur().idx;
-        assert_eq!(actual_pos, 13, "Expected cursor at position 13 (')'), but got {}", actual_pos);
+
+        let actual_pos = ed
+            .layout
+            .active_buffer_ignoring_scratch()
+            .dot
+            .active_cur()
+            .idx;
+        assert_eq!(
+            actual_pos, 13,
+            "Expected cursor at position 13 (')'), but got {}",
+            actual_pos
+        );
     }
 
     #[test]

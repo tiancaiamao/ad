@@ -8,7 +8,7 @@ foo
 bar
 baz
 -- actions --
-type: %
+type: <ctrl>a
 type: :|sort\n
 -- buffer-list --
 1    * foo.txt

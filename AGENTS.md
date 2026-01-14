@@ -23,7 +23,6 @@ This is a Rust terminal text editor project with a focus on modularity and testi
 - `just test` - Alias for nextest
 - `just test FILTER` - Run tests matching filter pattern
 - `cargo nextest run --workspace <test_name>` - Run single test by name
-- `cargo test --lib <test_name>` - Run specific library test
 - `cargo test -- <test_name>` - Run specific test with cargo
 - `just watch-tests` - Watch mode: re-run tests on file changes (uses entr)
 
