@@ -12,11 +12,12 @@ use crate::{
     },
 };
 use lsp_types::{
-    DiagnosticSeverity, Location, ProgressParamsValue, PublishDiagnosticsParams, Uri,
-    WorkDoneProgress, WorkDoneProgressBegin, WorkDoneProgressEnd, WorkDoneProgressReport,
-    notification::{Progress, PublishDiagnostics},
+    DiagnosticSeverity, Location, LogMessageParams, MessageType, ProgressParamsValue,
+    PublishDiagnosticsParams, Uri, WorkDoneProgress, WorkDoneProgressBegin, WorkDoneProgressEnd,
+    WorkDoneProgressReport,
+    notification::{LogMessage, Progress, PublishDiagnostics},
 };
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 /// Notifications sent from the server to us that we need to handle
 pub(crate) trait LspServerNotification: lsp_types::notification::Notification {
@@ -142,6 +143,33 @@ impl LspServerNotification for PublishDiagnostics {
         let mut guard = man.diagnostics.write().unwrap();
         guard.insert(uri, new_diagnostics);
 
+        None
+    }
+}
+
+impl LspServerNotification for LogMessage {
+    fn handle_params(
+        lsp_id: usize,
+        LogMessageParams { typ, message }: LogMessageParams,
+        man: &mut LspManager,
+    ) -> Option<Actions> {
+        // Get server name for context
+        let server_name = man
+            .clients
+            .get(&lsp_id)
+            .map(|c| c.cmd.as_str())
+            .unwrap_or("unknown");
+
+        // Log the message with appropriate level
+        match typ {
+            MessageType::ERROR => error!("LSP({}): {}", server_name, message),
+            MessageType::WARNING => warn!("LSP({}): {}", server_name, message),
+            MessageType::INFO => info!("LSP({}): {}", server_name, message),
+            MessageType::LOG => debug!("LSP({}): {}", server_name, message),
+            _ => debug!("LSP({}): {}", server_name, message),
+        }
+
+        // Don't return any actions - these are just log messages
         None
     }
 }

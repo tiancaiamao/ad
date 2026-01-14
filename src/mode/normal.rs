@@ -259,7 +259,9 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
             if keys.len() == 1 {
                 let i = keys[0];
                 return match i {
-                    Mouse(_) | Arrow(_) | PageUp | PageDown => Some(Actions::Single(RawInput { i })),
+                    Mouse(_) | Arrow(_) | PageUp | PageDown => {
+                        Some(Actions::Single(RawInput { i }))
+                    }
                     _ => None,
                 };
             }

@@ -469,6 +469,7 @@ impl LspManager {
             man: self,
         }
         .handle::<req::WorkDoneProgressCreate>()
+        .handle::<req::WorkspaceConfiguration>()
         .log_unhandled();
     }
 
@@ -498,6 +499,7 @@ impl LspManager {
         }
         .handle::<notif::Progress>()
         .handle::<notif::PublishDiagnostics>()
+        .handle::<notif::LogMessage>()
         .log_unhandled();
     }
 

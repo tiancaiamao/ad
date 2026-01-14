@@ -41,7 +41,7 @@ pub use mouse::Click;
 #[cfg(feature = "fuzz")]
 pub use commands::parse_command_fuzz;
 
-pub(crate) use actions::{Actions, ViewPort, ScrollAmount};
+pub(crate) use actions::{Actions, ScrollAmount, ViewPort};
 pub(crate) use built_in_commands::built_in_commands;
 pub(crate) use minibuffer::{MbSelect, MbSelector, MiniBufferSelection};
 

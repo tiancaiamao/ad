@@ -13,7 +13,7 @@ use std::{
     sync::mpsc::Sender,
     thread::{JoinHandle, spawn},
 };
-use tracing::error;
+use tracing::{error, info};
 
 /// A tagged message from an LSP
 #[derive(Debug)]
@@ -75,7 +75,20 @@ impl LspClient {
         let cmd_ = cmd.to_string();
         let err_thread = spawn(move || {
             for line in stderr.lines() {
-                error!("LSP({cmd_}): {}", line?);
+                let line = line?;
+                // Determine log level based on content for different LSP servers
+                if cmd_.contains("clangd") {
+                    // clangd uses stderr for normal logging, not just errors
+                    if line.contains("error:") || line.contains("failed") || line.contains("Failed")
+                    {
+                        error!("LSP({cmd_}): {}", line);
+                    } else {
+                        info!("LSP({cmd_}): {}", line);
+                    }
+                } else {
+                    // For other LSP servers, treat stderr as error by default
+                    error!("LSP({cmd_}): {}", line);
+                }
             }
 
             Ok(())

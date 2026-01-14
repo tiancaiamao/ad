@@ -9,7 +9,10 @@ use crate::{
         rpc::{Message, Request, RequestId, Response},
     },
 };
-use lsp_types::{WorkDoneProgressCreateParams, request::WorkDoneProgressCreate};
+use lsp_types::{
+    ConfigurationItem, ConfigurationParams, WorkDoneProgressCreateParams,
+    request::WorkDoneProgressCreate, request::WorkspaceConfiguration,
+};
 use tracing::{error, warn};
 
 /// Incoming requests from the server handle and respond to
@@ -89,5 +92,55 @@ impl LspServerRequest for WorkDoneProgressCreate {
         man.progress_tokens(lsp_id).insert(token, String::new());
 
         (Response::null_resp(req_id), None)
+    }
+}
+
+impl LspServerRequest for WorkspaceConfiguration {
+    fn handle_params(
+        _lsp_id: usize,
+        req_id: RequestId,
+        ConfigurationParams { items }: ConfigurationParams,
+        _man: &mut LspManager,
+    ) -> (Response, Option<Actions>) {
+        let mut results = Vec::new();
+
+        for ConfigurationItem {
+            scope_uri: _,
+            section,
+        } in items
+        {
+            // For now, return null for all configuration requests
+            // This could be enhanced in the future to return actual configuration
+            // from the user's config file or editor settings
+            match section.as_deref() {
+                Some("gopls") => {
+                    // Return default gopls configuration
+                    // This could be made configurable in the future
+                    let config = serde_json::json!({
+                        "usePlaceholders": true,
+                        "completeUnimported": true,
+                        "staticcheck": true,
+                        "gofumpt": true
+                    });
+                    results.push(config);
+                }
+                Some("clangd") => {
+                    // Return default clangd configuration
+                    let config = serde_json::json!({
+                        "fallbackFlags": ["-I", "src", "-I", "lib", "-I", ".", "--background-index"],
+                        "compilationDatabasePath": ".",
+                        "headerInsertion": "never"
+                    });
+                    results.push(config);
+                }
+                _ => {
+                    // Return null for unknown sections or when no section is specified
+                    results.push(serde_json::Value::Null);
+                }
+            }
+        }
+
+        let result = serde_json::to_value(results).unwrap_or(serde_json::Value::Null);
+        (Response::Result { id: req_id, result }, None)
     }
 }
