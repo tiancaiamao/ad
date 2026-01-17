@@ -1523,6 +1523,11 @@ unsafe fn decode_char_at(start: usize, bytes: &[u8]) -> char {
     // Decode from a byte combination out of: [[[x y] z] w]
     // NOTE: Performance is sensitive to the exact formulation here
     let init = utf8_first_byte(x, 2);
+
+    // Check bounds for continuation bytes to prevent panic when gap is in middle of UTF-8 char
+    if bytes.len() <= start + 1 {
+        return '\u{FFFD}'; // Unicode replacement character for incomplete sequence
+    }
     // SAFETY: `bytes` contains UTF-8-like string data so we have the next byte,
     let y = bytes[start + 1];
     let mut ch = utf8_acc_cont_byte(init, y);
@@ -1530,6 +1535,9 @@ unsafe fn decode_char_at(start: usize, bytes: &[u8]) -> char {
     if x >= 0xE0 {
         // [[x y z] w] case
         // 5th bit in 0xE0 .. 0xEF is always clear, so `init` is still valid
+        if bytes.len() <= start + 2 {
+            return '\u{FFFD}';
+        }
         // SAFETY: `bytes` contains UTF-8-like string data so we have the next byte,
         let z = bytes[start + 2];
         let y_z = utf8_acc_cont_byte((y & CONT_MASK) as u32, z);
@@ -1537,6 +1545,9 @@ unsafe fn decode_char_at(start: usize, bytes: &[u8]) -> char {
         if x >= 0xF0 {
             // [x y z w] case
             // use only the lower 3 bits of `init`
+            if bytes.len() <= start + 3 {
+                return '\u{FFFD}';
+            }
             // SAFETY: `bytes` contains UTF-8-like string data so we have the next byte,
             let w = bytes[start + 3];
             ch = ((init & 7) << 18) | utf8_acc_cont_byte(y_z, w);
@@ -1560,15 +1571,25 @@ unsafe fn decode_char_ending_at(end: usize, bytes: &[u8]) -> char {
 
     // Multibyte case follows
     // Decode from a byte combination out of: [x [y [z w]]]
-    let mut ch;
+
+    // Check bounds for continuation bytes to prevent panic when gap is in middle of UTF-8 char
+    if end < 1 {
+        return '\u{FFFD}'; // Unicode replacement character for incomplete sequence
+    }
     // SAFETY: `bytes` contains UTF-8-like string data so we have the next byte,
     let z = bytes[end - 1];
-    ch = utf8_first_byte(z, 2);
+    let mut ch = utf8_first_byte(z, 2);
     if utf8_is_cont_byte(z) {
+        if end < 2 {
+            return '\u{FFFD}';
+        }
         // SAFETY: `bytes` contains UTF-8-like string data so we have the next byte,
         let y = bytes[end - 2];
         ch = utf8_first_byte(y, 3);
         if utf8_is_cont_byte(y) {
+            if end < 3 {
+                return '\u{FFFD}';
+            }
             // SAFETY: `bytes` contains UTF-8-like string data so we have the next byte,
             let x = bytes[end - 3];
             ch = utf8_first_byte(x, 4);
