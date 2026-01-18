@@ -77,16 +77,15 @@ fn match_to_dot(m: Option<(usize, usize)>) -> Option<Dot> {
 }
 
 fn find_between<F: Find>(f: &F, from: usize, to: usize, b: &Buffer) -> Option<Dot> {
+    // from and to are already character indices
     match_to_dot(f.try_find(b.iter_between_chars(from, to)))
 }
 
 fn rev_find_between<F: Find>(f: &F, from: usize, to: usize, b: &Buffer) -> Option<Dot> {
-    let ch_from = b.txt.byte_to_char(from);
-    let ch_to = b.txt.byte_to_char(to);
-
+    // from and to are already character indices, no conversion needed
     match_to_dot(
         f.reversed()
-            .try_find(b.rev_iter_between_chars(ch_from, ch_to)),
+            .try_find(b.rev_iter_between_chars(from, to)),
     )
 }
 
