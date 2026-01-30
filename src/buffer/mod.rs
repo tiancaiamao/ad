@@ -10,7 +10,7 @@ use crate::{
     key::Input,
     lsp::Coords,
     syntax::{LineIter, SyntaxState},
-    util::normalize_line_endings,
+    util::{normalize_line_endings, truncate_string_to_columns},
 };
 use ad_event::Source;
 use std::{
@@ -453,20 +453,25 @@ impl Buffer {
 
     /// Short name for displaying in the status line
     pub fn display_name(&self) -> String {
-        let s = self.kind.display_name();
+        // For file and directory buffers, display only the filename (basename)
+        // instead of the full path to avoid truncation
+        let name = match &self.kind {
+            BufferKind::File(p) => {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| self.kind.display_name())
+            }
+            BufferKind::Directory(p) => {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| self.kind.display_name())
+            }
+            _ => self.kind.display_name(),
+        };
 
-        if s.len() <= MAX_NAME_LEN {
-            s.to_string()
-        } else {
-            // Find the last character boundary at or before MAX_NAME_LEN bytes
-            // to avoid slicing in the middle of a multi-byte UTF-8 character
-            let boundary = s.char_indices()
-                .map(|(i, _)| i)
-                .take_while(|&i| i < MAX_NAME_LEN)
-                .last()
-                .unwrap_or(0);
-            s[..boundary].to_string()
-        }
+        truncate_string_to_columns(&name, MAX_NAME_LEN)
     }
 
     /// Absolute path of full name of a virtual buffer
@@ -1450,37 +1455,33 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn display_name_short_path_returns_full() {
-        // Short path (< MAX_NAME_LEN) should return full path
+    fn display_name_short_path_returns_filename() {
+        // Short path (< MAX_NAME_LEN) should return filename only
         let short_path = PathBuf::from("/home/user/file.txt");
         let b = Buffer::new_from_canonical_file_path(0, short_path, Default::default())
             .expect("create buffer");
 
-        assert_eq!(b.display_name(), "/home/user/file.txt");
+        assert_eq!(b.display_name(), "file.txt");
     }
 
     #[test]
-    fn display_name_long_path_is_truncated() {
-        // Long path (> MAX_NAME_LEN) should be truncated
+    fn display_name_long_path_returns_filename() {
+        // Long path (> MAX_NAME_LEN) should return filename only, not truncated
         // Create a path with 60+ ASCII characters
         let long_path = PathBuf::from("/a/very/long/path/that/exceeds/the/maximum/name/length/limit.txt");
         let b = Buffer::new_from_canonical_file_path(0, long_path, Default::default())
             .expect("create buffer");
 
         let result = b.display_name();
-        // For ASCII, should be 49 bytes because char_indices gives starting positions
-        // [0, 1, ..., 49] and we take the last one < MAX_NAME_LEN (50)
-        assert_eq!(result.len(), 49);
-        // The path returned by Path::display() might differ slightly
-        assert!(result.ends_with("ximum/name/l"));
+        // Should return just the filename, which is short enough
+        assert_eq!(result, "limit.txt");
     }
 
     #[test]
     fn display_name_multibyte_utf8_does_not_panic() {
         // This is the regression test for the original bug
         // The path "ai_coding_能力边界探索.md" has a multi-byte character
-        // '索' at bytes 49-52, and the old code tried to slice at byte 50,
-        // which is in the middle of that character
+        // Now we only display the filename, so it won't be truncated
         let path_with_multibyte = PathBuf::from("/Users/genius/Downloads/ai_coding_能力边界探索.md");
         let b = Buffer::new_from_canonical_file_path(0, path_with_multibyte, Default::default())
             .expect("create buffer");
@@ -1491,15 +1492,13 @@ pub(crate) mod tests {
         // The result should be a valid string (not panic when checking)
         assert!(result.is_char_boundary(result.len()));
 
-        // Result should be <= MAX_NAME_LEN bytes and end at a char boundary
-        assert!(result.len() <= MAX_NAME_LEN);
-        // The truncated version ends before '索' which starts at byte 49
-        assert!(result.ends_with("能力边界探"));
+        // Result should be the full filename since it's short enough
+        assert_eq!(result, "ai_coding_能力边界探索.md");
     }
 
     #[test]
     fn display_name_multibyte_at_exact_boundary() {
-        // Test when multibyte character starts exactly at MAX_NAME_LEN
+        // Test with multibyte characters in filename
         // "测试" (test in Chinese) = 6 bytes total
         let path = format!("/home/user/测试文件.md");
         // /home/user/ = 11 bytes, 测试 = 6 bytes, 文件.md = 8 bytes
@@ -1509,7 +1508,8 @@ pub(crate) mod tests {
             .expect("create buffer");
 
         let result = b.display_name();
-        assert_eq!(result, path);
+        // Should return just the filename
+        assert_eq!(result, "测试文件.md");
     }
 
     #[test]
@@ -1519,12 +1519,12 @@ pub(crate) mod tests {
         let b = Buffer::new_from_canonical_file_path(0, path, Default::default())
             .expect("create buffer");
 
-        // Should not panic even when truncation point is in middle of multibyte char
+        // Should return just the filename
         let result = b.display_name();
 
-        // Verify the result is valid UTF-8
+        // Verify the result is valid UTF-8 and is the full filename
         assert!(result.is_char_boundary(result.len()));
-        assert!(result.len() <= MAX_NAME_LEN);
+        assert_eq!(result, "文件名包含中文字符很长需要截断.md");
     }
 
     #[test]
