@@ -147,9 +147,9 @@ pub(crate) fn normal_mode() -> (Mode, Vec<(String, &'static str)>) {
         "extend selection to start of line";
         [ Alt('h') ] => [ DotExtendBackward(LineStart, 1) ],
         "extend selection one line down";
-        [ Alt('j') ] => [ DotExtendForward(Line, 1) ],
+        [ Ctrl('n') ] => [ DotExtendForward(Line, 1) ],
         "extend selection one line up";
-        [ Alt('k') ] => [ DotExtendBackward(Line, 1) ],
+        [ Ctrl('p') ] => [ DotExtendBackward(Line, 1) ],
         "extend selection to end of line";
         [ Alt('l') ] => [ DotExtendForward(LineEnd, 1) ],
         // >> objects

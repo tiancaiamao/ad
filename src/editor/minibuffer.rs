@@ -226,14 +226,14 @@ where
                     Source::Keyboard,
                 );
             }
-            Input::Alt('k') | Input::Arrow(Arrow::Up) => {
+            Input::Ctrl('p') | Input::Arrow(Arrow::Up) => {
                 if self.selected_line_idx == 0 {
                     self.b.set_dot(TextObject::BufferEnd, 1);
                 } else {
                     self.b.set_dot(TextObject::Arr(Arrow::Up), 1);
                 }
             }
-            Input::Alt('j') | Input::Arrow(Arrow::Down) => {
+            Input::Ctrl('n') | Input::Arrow(Arrow::Down) => {
                 if self.selected_line_idx == self.b.len_lines() - 1 {
                     self.b.set_dot(TextObject::BufferStart, 1);
                 } else {

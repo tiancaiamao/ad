@@ -30,10 +30,10 @@ sleep_ms: 100
 type: j
 sleep_ms: 100
 
-# this delete should run in the output buffer: we use Alt-j to select the second
+# this delete should run in the output buffer: we use Ctrl-n to select the second
 # instance of baz for deletion.
 type: /baz
-type: <alt>j
+type: <ctrl>n
 type: \nxd
 -- buffer-list --
 1      foo.txt

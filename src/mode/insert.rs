@@ -29,9 +29,9 @@ pub(crate) fn insert_mode() -> (Mode, Vec<(String, &'static str)>) {
         "return to NORMAL mode and move one character left";
         [ Alt('h') ] => [ SetMode { m: "NORMAL" }, DotSet(Arr(Left), 1) ],
         "return to NORMAL mode and move one line down";
-        [ Alt('j') ] => [ SetMode { m: "NORMAL" }, DotSet(Arr(Down), 1) ],
+        [ Ctrl('n') ] => [ SetMode { m: "NORMAL" }, DotSet(Arr(Down), 1) ],
         "return to NORMAL mode and move one line up";
-        [ Alt('k') ] => [ SetMode { m: "NORMAL" }, DotSet(Arr(Up), 1) ],
+        [ Ctrl('p') ] => [ SetMode { m: "NORMAL" }, DotSet(Arr(Up), 1) ],
         "return to NORMAL mode and move one character right";
         [ Alt('l') ] => [ SetMode { m: "NORMAL" }, DotSet(Arr(Right), 1) ],
 
