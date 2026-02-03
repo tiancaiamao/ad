@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 
@@ -112,6 +113,12 @@ func (c *Client) WriteBody(bufferID, content string) error {
 	return err
 }
 
+// ReadBody reads a buffer's body
+func (c *Client) ReadBody(bufferID string) (string, error) {
+	path := fmt.Sprintf("buffers/%s/body", bufferID)
+	return c.ReadFile(path)
+}
+
 // AppendToBody appends content to a buffer's body
 func (c *Client) AppendToBody(bufferID, content string) error {
 	return c.WriteBody(bufferID, content)
@@ -161,6 +168,60 @@ func (c *Client) ReadXDot(bufferID string) (string, error) {
 func (c *Client) MarkClean(bufferID string) error {
 	_, err := c.WriteFile("ctl", []byte("mark-clean"))
 	return err
+}
+
+// FocusBuffer focuses a buffer by writing to current
+func (c *Client) FocusBuffer(bufferID string) error {
+	_, err := c.WriteFile("buffers/current", []byte(bufferID))
+	return err
+}
+
+// GetCurrentBuffer returns the currently focused buffer ID
+func (c *Client) GetCurrentBuffer() (string, error) {
+	bufferID, err := c.ReadFile("buffers/current")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(bufferID), nil
+}
+
+// SetViewport sends a viewport command to the editor
+func (c *Client) SetViewport(command string) error {
+	_, err := c.WriteFile("ctl", []byte(command))
+	return err
+}
+
+// CenterViewport centers the viewport for a buffer and restores focus
+func (c *Client) CenterViewport(bufferID string) error {
+	// Save the current buffer
+	currentBuffer, err := c.GetCurrentBuffer()
+	if err != nil {
+		return fmt.Errorf("get current buffer: %w", err)
+	}
+
+	// Focus the target buffer
+	if err := c.FocusBuffer(bufferID); err != nil {
+		return fmt.Errorf("focus buffer %s: %w", bufferID, err)
+	}
+
+	// Set addr to end of buffer
+	if err := c.WriteAddr(bufferID, "$"); err != nil {
+		return fmt.Errorf("write addr: %w", err)
+	}
+
+	// Scroll viewport to show the last line at bottom
+	if err := c.SetViewport("viewport-bottom"); err != nil {
+		return fmt.Errorf("viewport-bottom: %w", err)
+	}
+
+	// Restore focus to original buffer
+	if currentBuffer != "" && currentBuffer != bufferID {
+		if err := c.FocusBuffer(currentBuffer); err != nil {
+			return fmt.Errorf("restore focus to %s: %w", currentBuffer, err)
+		}
+	}
+
+	return nil
 }
 
 // BodyWriter returns an io.Writer for writing to a buffer's body
@@ -216,11 +277,18 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 					continue
 				}
 
+				// DEBUG: 打印所有收到的事件
+				log.Printf("[EVENT-RAW] %s", line)
+
 				var evt FsysEvent
 				if err := json.Unmarshal([]byte(line), &evt); err != nil {
 					// Skip malformed events
+					log.Printf("[EVENT-ERROR] Failed to parse: %v", err)
 					continue
 				}
+
+				// DEBUG: 打印解析后的事件
+				log.Printf("[EVENT] kind=%s source=%s txt=%q", evt.Kind, evt.Source, evt.Txt)
 
 				// Dispatch to handler based on event kind
 				var handlerErr error
@@ -230,6 +298,7 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 				case "D": // DeleteBody
 					handlerErr = handler.HandleDelete(evt.Source, evt.ChFrom, evt.ChTo, c)
 				case "X": // ExecuteBody
+					log.Printf("[EVENT] Calling HandleExecute!")
 					handlerErr = handler.HandleExecute(evt.Source, evt.ChFrom, evt.ChTo, evt.Txt, c)
 				case "L": // LoadBody
 					// Write event back to ad for internal processing

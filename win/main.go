@@ -1,50 +1,82 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/sminez/ad/win/pkg/ad"
-	"github.com/sminez/ad/win/pkg/shell"
 )
 
 const (
 	DEFAULT_WINDOW_NAME = "+win"
-	DEFAULT_PROMPT      = "$ "
+	PROMPT              = "> "
 )
+
+// EchoInterpreter 是一个简单的解释器
+// 每次调用时启动新进程，而不是保持持久连接
+type EchoInterpreter struct {
+	lineNumber int
+}
+
+func NewEchoInterpreter() (*EchoInterpreter, error) {
+	return &EchoInterpreter{
+		lineNumber: 0,
+	}, nil
+}
+
+func (e *EchoInterpreter) Process(input string) (string, error) {
+	// 每次启动新进程处理输入
+	e.lineNumber++
+
+	// 使用 awk 给输入加上行号
+	cmd := exec.Command("awk", fmt.Sprintf("{ print \"%d\\t\" $0 }", e.lineNumber))
+
+	cmd.Stdin = strings.NewReader(input)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("interpreter run failed: %w", err)
+	}
+
+	output := stdout.String()
+	if output == "" {
+		output = input // 如果 awk 没输出，直接返回输入
+	}
+
+	return output, nil
+}
+
+func (e *EchoInterpreter) Close() error {
+	return nil
+}
+
+type EchoReplHandler struct {
+	bufferID    string
+	interpreter *EchoInterpreter
+	client      *ad.Client
+}
 
 func main() {
 	windowName := flag.String("name", DEFAULT_WINDOW_NAME, "window name")
-	defaultShell := os.Getenv("SHELL")
-	if defaultShell == "" {
-		// Try rc first (Plan 9 shell), fall back to sh
-		if _, err := exec.LookPath("rc"); err == nil {
-			defaultShell = "rc"
-		} else {
-			defaultShell = "/bin/sh"
-		}
-	}
-	shellPath := flag.String("shell", defaultShell, "shell path")
-	oneTimeCmd := flag.String("cmd", "", "one-time command (interactive mode if empty)")
 	debug := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
 
 	if *debug {
 		log.SetFlags(log.Ltime | log.Lshortfile)
-		log.Println("Starting win with debug logging")
+		log.Println("Starting echo-repl with debug logging")
 	}
 
 	client, err := ad.NewClient()
 	if err != nil {
-		log.Fatalf("unable to connect to ad\n%v", err)
+		log.Fatalf("unable to connect to ad: %v", err)
 	}
 	defer func() {
 		if *debug {
@@ -59,297 +91,211 @@ func main() {
 
 	bufferID, err := client.OpenInNewWindow(*windowName)
 	if err != nil {
-		log.Fatalf("unable to create window\n%v", err)
+		log.Fatalf("unable to create window: %v", err)
 	}
 
 	if *debug {
 		log.Printf("Created window %s with buffer ID: %s\n", *windowName, bufferID)
 	}
 
-	if *oneTimeCmd != "" {
-		executeOneTimeCommand(client, bufferID, *oneTimeCmd, *shellPath)
-		return
-	}
-
-	startInteractiveREPL(client, bufferID, *shellPath, *debug)
+	startEchoREPL(client, bufferID, *debug)
 }
 
-func executeOneTimeCommand(client *ad.Client, bufferID, cmd, shellPath string) {
-	envVars := os.Environ()
-	sh, err := shell.NewShell(shellPath, envVars, false, cmd)
+func startEchoREPL(client *ad.Client, bufferID string, debug bool) {
+	// 打开日志文件
+	logFile, err := os.OpenFile("/tmp/echo-repl.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		log.Fatalf("unable to create shell\n%v", err)
+		log.Fatalf("unable to open log file: %v", err)
 	}
-	defer sh.Close()
+	defer logFile.Close()
 
-	bodyWriter := client.BodyWriter(bufferID)
-	go func() {
-		io.Copy(bodyWriter, sh.Stdout())
-	}()
-	go func() {
-		io.Copy(bodyWriter, sh.Stderr())
-	}()
+	log.SetOutput(logFile)
+	log.SetFlags(log.Ltime | log.Lmicroseconds)
 
-	sh.Wait()
-}
+	log.Println("=== Echo REPL Starting ===")
+	log.Printf("Buffer ID: %s\n", bufferID)
 
-func startInteractiveREPL(client *ad.Client, bufferID, shellPath string, debug bool) {
-	if debug {
-		log.Println("Initializing REPL window")
-	}
+	// 初始化 buffer 内容
+	welcome := `# Echo REPL
+#
+# 这是一个简单的 REPL 示例，展示如何将 ad 与外部解释器整合
+#
+# 工作流程：
+# 1. 在任意 buffer 中选中文本（dot）
+# 2. 按 C-t 将选中的文本发送到这里
+# 3. 解释器会处理输入并返回结果（加行号）
+#
+# 或者直接在这里输入内容，按回车执行
+#
+` + PROMPT
 
-	if err := client.WriteBody(bufferID, DEFAULT_PROMPT); err != nil {
-		log.Fatalf("unable to initialize window\n%v", err)
+	if err := client.WriteBody(bufferID, welcome); err != nil {
+		log.Fatalf("unable to initialize window: %v", err)
 	}
 	if err := client.WriteAddr(bufferID, "$"); err != nil {
-		log.Fatalf("unable to set address\n%v", err)
+		log.Fatalf("unable to set address: %v", err)
 	}
 
-	if debug {
-		log.Println("Starting shell subprocess")
-	}
-
-	envVars := os.Environ()
-	envVars = append(envVars,
-		fmt.Sprintf("prompt=%s", DEFAULT_PROMPT),
-		"TERM=dumb",          // Disable fancy terminal features
-		"NO_COLOR=1",         // Disable colors
-		"CLICOLOR=0",         // Disable CLI colors
-	)
-
-	// DO NOT use interactive mode (-i) as it may interfere with terminal control
-	// Use a non-interactive shell instead
-	sh, err := shell.NewShell(shellPath, envVars, false, "")
+	log.Println("Creating interpreter...")
+	interpreter, err := NewEchoInterpreter()
 	if err != nil {
-		log.Fatalf("unable to create shell\n%v", err)
+		log.Fatalf("unable to create interpreter: %v", err)
 	}
-	defer sh.Close()
+	defer interpreter.Close()
 
-	if debug {
-		log.Println("Shell started successfully")
-	}
+	log.Println("Interpreter created successfully")
 
-	// For Python and other interpreters, force unbuffered output
-	if strings.Contains(shellPath, "python") {
-		if debug {
-			log.Println("Detected Python - forcing unbuffered mode")
-		}
-		// Add PYTHONUNBUFFERED to environment
-		envVars = append(envVars, "PYTHONUNBUFFERED=1")
-		// Restart shell with new env
-		sh.Close()
-		sh, err = shell.NewShell(shellPath, envVars, false, "")
-		if err != nil {
-			log.Fatalf("unable to recreate shell\n%v", err)
-		}
+	handler := &EchoReplHandler{
+		bufferID:    bufferID,
+		interpreter: interpreter,
+		client:      client,
 	}
 
-	// Stream shell output to buffer
-	if debug {
-		log.Println("Starting stdout copy goroutine")
-	}
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := sh.Stdout().Read(buf)
-			if n > 0 {
-				if err := client.WriteBody(bufferID, string(buf[:n])); err != nil {
-					if debug {
-						log.Printf("stdout write error: %v\n", err)
-					}
-					return
-				}
-				if err := client.WriteAddr(bufferID, "$"); err != nil {
-					if debug {
-						log.Printf("write-addr error: %v\n", err)
-					}
-				}
-			}
-			if err != nil {
-				if debug && err != io.EOF {
-					log.Printf("stdout read error: %v\n", err)
-				}
-				return
-			}
-		}
-	}()
-	
-	if debug {
-		log.Println("Starting stderr copy goroutine")
-	}
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := sh.Stderr().Read(buf)
-			if n > 0 {
-				if err := client.WriteBody(bufferID, string(buf[:n])); err != nil {
-					if debug {
-						log.Printf("stderr write error: %v\n", err)
-					}
-					return
-				}
-				if err := client.WriteAddr(bufferID, "$"); err != nil {
-					if debug {
-						log.Printf("write-addr error: %v\n", err)
-					}
-				}
-			}
-			if err != nil {
-				if debug && err != io.EOF {
-					log.Printf("stderr read error: %v\n", err)
-				}
-				return
-			}
-		}
-	}()
+	log.Println("Ready to process events")
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		if debug {
-			log.Println("Received signal, shutting down")
-		}
-		sh.Close()
-		os.Exit(0)
-	}()
-
-	handler := &ReplHandler{
-		bufferID: bufferID,
-		shell:    sh,
-		prompt:   DEFAULT_PROMPT,
-		debug:    debug,
-		client:   client,
-	}
-
-	if debug {
-		log.Println("Starting event filter loop")
-	}
-
-	// Run event filter to handle user input
 	if err := client.RunEventFilter(bufferID, handler); err != nil {
-		log.Fatalf("event filter died\n%v", err)
+		log.Fatalf("event filter died: %v", err)
 	}
 }
 
-type ReplHandler struct {
-	bufferID string
-	shell    *shell.Shell
-	prompt   string
-	debug    bool
-	client   *ad.Client
-}
-
-func (h *ReplHandler) HandleInsert(source string, from, to int, txt string, client *ad.Client) error {
-	if h.debug {
-		log.Printf("HandleInsert: source=%s, from=%d, to=%d, txt=%q\n", source, from, to, txt)
-	}
+func (h *EchoReplHandler) HandleInsert(source string, from, to int, txt string, client *ad.Client) error {
+	log.Printf("HandleInsert: source=%s, from=%d, to=%d, txt=%q", source, from, to, txt)
 
 	if err := client.MarkClean(h.bufferID); err != nil {
+		log.Printf("HandleInsert: MarkClean error: %v", err)
 		return fmt.Errorf("mark-clean failed: %w", err)
 	}
 
-	// If this is output from the shell, just move dot to EOF
-	if source == "F" {
-		return client.WriteAddr(h.bufferID, "$")
+	// 如果是来自 send-to-echo 脚本的命令（以 > 开头）
+	if source == "F" && strings.HasPrefix(txt, PROMPT) {
+		// 提取命令并执行
+		input := strings.TrimPrefix(txt, PROMPT)
+		input = strings.TrimSpace(input)
+		// 去掉末尾的换行符
+		input = strings.TrimSuffix(input, "\n")
+		if input != "" {
+			log.Printf("HandleInsert: executing script command: %q", input)
+			return h.executeCommand(input, true) // 来自 send-to-echo，需要居中视口
+		}
 	}
 
-	// When user presses enter, send the last line they typed
-	if txt == "\n" {
-		if err := client.WriteXAddr(h.bufferID, "$"); err != nil {
-			return fmt.Errorf("write-xaddr failed: %w", err)
-		}
+	// 用户按回车时，发送最后一行给解释器
+	if source == "K" && txt == "\n" {
+		log.Println("HandleInsert: user pressed Enter")
 
-		xaddr, err := client.ReadXAddr(h.bufferID)
+		// 读取 buffer body 的最后一部分
+		// 只读取最后 200 个字符，足够包含最后一行
+		body, err := h.client.ReadFile("buffers/" + h.bufferID + "/body")
 		if err != nil {
-			return fmt.Errorf("read-xaddr failed: %w", err)
+			log.Printf("HandleInsert: ReadFile error: %v", err)
+			return fmt.Errorf("read-body failed: %w", err)
 		}
 
-		addr, err := client.ReadAddr(h.bufferID)
-		if err != nil {
-			return fmt.Errorf("read-addr failed: %w", err)
+		// 只保留最后 200 字符以提高效率
+		if len(body) > 200 {
+			body = body[len(body)-200:]
 		}
 
-		// Only execute if cursor is at EOF
-		if xaddr == addr {
-			// Read the last line before the newline
-			if err := client.WriteXAddr(h.bufferID, "$-1"); err != nil {
-				return fmt.Errorf("write-xaddr failed: %w", err)
-			}
+		log.Printf("HandleInsert: body tail: %q", body)
 
-			raw, err := client.ReadXDot(h.bufferID)
-			if err != nil {
-				return fmt.Errorf("read-xdot failed: %w", err)
-			}
-
-			// Strip the prompt and any shell output artifacts
-			input := stripPrompt(raw, h.prompt)
+		// 找到最后一个换行符（用户按回车插入的）
+		lastNewline := strings.LastIndex(body, "\n")
+		if lastNewline == -1 {
+			// buffer 只有一行
+			input := strings.TrimPrefix(body, PROMPT)
 			input = strings.TrimSpace(input)
-			
+			log.Printf("HandleInsert: extracted input: %q", input)
 			if input != "" {
-				return h.sendInput(input, client)
+				return h.executeCommand(input, false) // 手动输入，不需要居中视口
 			}
+			return client.MarkClean(h.bufferID)
+		}
+
+		// 找到倒数第二个换行符
+		prevNewline := strings.LastIndex(body[:lastNewline], "\n")
+		var lastLine string
+		if prevNewline == -1 {
+			lastLine = body[:lastNewline]
+		} else {
+			lastLine = body[prevNewline+1 : lastNewline]
+		}
+
+		log.Printf("HandleInsert: last line: %q", lastLine)
+
+		input := strings.TrimPrefix(lastLine, PROMPT)
+		input = strings.TrimSpace(input)
+
+		log.Printf("HandleInsert: extracted input: %q", input)
+
+		if input != "" {
+			return h.executeCommand(input, false) // 手动输入，不需要居中视口
 		}
 	}
 
-	return nil
+	// 其他情况（解释器输出），确保光标在末尾
+	// 这是 executeCommand 写入输出后触发的，我们需要确保光标在正确的位置
+	return client.WriteAddr(h.bufferID, "$")
 }
 
-func (h *ReplHandler) HandleDelete(source string, from, to int, client *ad.Client) error {
+func (h *EchoReplHandler) HandleDelete(source string, from, to int, client *ad.Client) error {
 	return client.MarkClean(h.bufferID)
 }
 
-func (h *ReplHandler) HandleExecute(source string, from, to int, txt string, client *ad.Client) error {
-	input := stripPrompt(txt, h.prompt)
+func (h *EchoReplHandler) HandleExecute(source string, from, to int, txt string, client *ad.Client) error {
+	input := strings.TrimSpace(txt)
 
-	// Echo the command with prompt
-	content := fmt.Sprintf("\n%s%s\n", h.prompt, strings.TrimSpace(input))
-	if err := client.AppendToBody(h.bufferID, content); err != nil {
+	log.Printf("HandleExecute: source=%s, from=%d, to=%d, txt=%q, input=%q", source, from, to, txt, input)
+
+	// 只添加换行，然后发送给解释器
+	if err := client.AppendToBody(h.bufferID, "\n"); err != nil {
+		log.Printf("HandleExecute: AppendToBody error: %v", err)
 		return fmt.Errorf("append-to-body failed: %w", err)
 	}
 
-	return h.sendInput(input, client)
+	return h.executeCommand(input, true) // Execute 事件需要居中视口
 }
 
-func (h *ReplHandler) sendInput(input string, client *ad.Client) error {
-	// Trim whitespace and ensure single newline at end
-	cmd := strings.TrimSpace(input) + "\n"
+func (h *EchoReplHandler) executeCommand(input string, centerViewport bool) error {
+	log.Printf("executeCommand: processing input: %q, centerViewport=%v", input, centerViewport)
 
-	if h.debug {
-		log.Printf("Sending to shell: %q\n", cmd)
+	// 调用解释器处理输入
+	output, err := h.interpreter.Process(input)
+	if err != nil {
+		log.Printf("executeCommand: interpreter error: %v", err)
+		return fmt.Errorf("interpreter error: %w", err)
 	}
 
-	if err := h.shell.Write(cmd); err != nil {
-		return fmt.Errorf("shell write failed: %w", err)
+	log.Printf("executeCommand: interpreter output: %q", output)
+
+	// 一次性写入输出和提示符（减少事件触发次数）
+	fullOutput := output + "\n" + PROMPT
+	if err := h.client.AppendToBody(h.bufferID, fullOutput); err != nil {
+		log.Printf("executeCommand: AppendToBody error: %v", err)
+		return fmt.Errorf("append-to-body failed: %w", err)
 	}
 
-	// Add a small delay to let output complete, then add prompt
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		if err := client.AppendToBody(h.bufferID, "\n"+h.prompt); err == nil {
-			client.WriteAddr(h.bufferID, "$")
+	// 移动光标到末尾
+	if err := h.client.WriteAddr(h.bufferID, "$"); err != nil {
+		log.Printf("executeCommand: WriteAddr error: %v", err)
+		return fmt.Errorf("write-addr failed: %w", err)
+	}
+
+	// 如果需要居中视口（从其他 buffer 执行命令）
+	if centerViewport {
+		log.Printf("executeCommand: centering viewport for buffer %s", h.bufferID)
+		if err := h.client.CenterViewport(h.bufferID); err != nil {
+			log.Printf("executeCommand: CenterViewport error: %v", err)
+			return fmt.Errorf("center-viewport failed: %w", err)
 		}
-	}()
+	} else {
+		// 手动输入的情况：请求焦点以刷新光标位置
+		log.Printf("executeCommand: requesting focus for buffer %s", h.bufferID)
+		if err := h.client.FocusBuffer(h.bufferID); err != nil {
+			log.Printf("executeCommand: FocusBuffer error: %v", err)
+			return fmt.Errorf("focus-buffer failed: %w", err)
+		}
+	}
 
+	log.Println("executeCommand: completed successfully")
 	return nil
-}
-
-func stripPrompt(s, prompt string) string {
-	// Strip our own prompt first
-	s = strings.TrimPrefix(s, prompt)
-	
-	// Strip common interpreter prompts
-	commonPrompts := []string{
-		">>> ",  // Python primary prompt
-		"... ",  // Python continuation prompt
-		"irb> ", // Ruby irb
-		">> ",   // Other REPLs
-		"> ",    // Generic prompt
-	}
-	
-	for _, p := range commonPrompts {
-		s = strings.TrimPrefix(s, p)
-	}
-	
-	return s
 }
