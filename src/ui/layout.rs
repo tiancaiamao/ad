@@ -1582,6 +1582,15 @@ impl View {
         cols: usize,
         tabstop: usize,
     ) {
+        // Clamp the view's cursor to be within the buffer bounds.
+        // This handles cases where the buffer content was replaced (e.g., reload)
+        // but the view's cursor wasn't updated, which would cause a panic when
+        // trying to convert the cursor position to line/column coordinates.
+        let max_idx = b.txt.len_chars();
+        if self.cur.idx > max_idx {
+            self.cur.idx = max_idx;
+        }
+
         b.dot = self.cur.into();
         self.clamp_scroll(b, rows, cols, tabstop);
     }
@@ -1817,6 +1826,7 @@ fn apply_scroll(
 mod tests {
     use super::*;
     use crate::{
+        buffer::Buffer,
         dot::{Dot, TextObject},
         key::Arrow,
     };
@@ -2523,5 +2533,77 @@ mod tests {
         apply_scroll(&mut b, &mut win, n_cols, tabstop, focused, up, scroll_rows);
 
         assert_eq!(win.view.row_off, y_max);
+    }
+
+    #[test]
+    fn prev_window_in_column_handles_empty_buffer_with_stale_cursor() {
+        // Regression test for panic when:
+        // 1. A buffer has content and cursor at position > 0
+        // 2. Buffer gets cleared/reloaded (content becomes empty)
+        // 3. View's cursor position is NOT updated (still at old position)
+        // 4. Switching windows triggers force_cursor_to_be_in_view
+        //
+        // Before the fix, this would panic with:
+        // "char index was X but the buffer char length is 0"
+
+        // Create a layout with two buffers in the same column
+        let mut l = test_layout(&[2], 80, 100);
+
+        // Move to the second buffer (id = 1)
+        l.next_window_in_column();
+        assert_eq!(l.focused_view().bufid, 1);
+
+        // Insert content to move the cursor position
+        {
+            let b = l.buffers.with_id_mut(1).unwrap();
+            b.insert_xdot("a".repeat(820));
+            // This sets View.cur to position 820 through clamp_scroll
+        }
+        l.clamp_scroll();
+
+        // Get the current View.cur to verify it's at 820
+        let original_cursor_pos = l.focused_view().cur.idx;
+        assert!(original_cursor_pos > 800, "Cursor should be at position > 800");
+
+        // Now simulate the buffer being reloaded with empty content
+        // but View.cur NOT being updated (the bug scenario)
+        // We do this by directly replacing the internal txt field
+        #[allow(dead_code)]
+        fn replace_buffer_content(b: &mut Buffer, content: &str) {
+            // This simulates what happens in reload_from_disk where the buffer
+            // content is replaced but views may not be updated
+            use crate::buffer::GapBuffer;
+            b.txt = GapBuffer::from(content);
+            b.dot.clamp_idx(b.txt.len_chars());
+            b.xdot.clamp_idx(b.txt.len_chars());
+            // Note: View.cur is NOT updated here, which is the bug
+        }
+
+        // Call our helper to replace buffer content with empty string
+        let b = l.buffers.with_id_mut(1).unwrap();
+        replace_buffer_content(b, "");
+
+        // Verify buffer is now empty
+        assert_eq!(b.len_chars(), 0);
+
+        // But View.cur is still at the old position
+        assert_eq!(l.focused_view().cur.idx, original_cursor_pos);
+
+        // Switch back to first buffer
+        l.prev_window_in_column();
+        assert_eq!(l.focused_view().bufid, 0);
+
+        // Switch to second buffer again - this would panic before the fix
+        // because it calls force_cursor_to_be_in_view with View.cur=820
+        // but buffer length is 0
+        l.next_window_in_column();
+        assert_eq!(l.focused_view().bufid, 1);
+
+        // If we get here without panicking, the fix works!
+        // Verify that cursor was clamped to buffer length
+        let b = l.buffers.with_id(1).unwrap();
+        let view = l.focused_view();
+        assert_eq!(b.len_chars(), 0);
+        assert_eq!(view.cur.idx, 0, "View cursor should be clamped to buffer length");
     }
 }
