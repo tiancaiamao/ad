@@ -1,6 +1,5 @@
 //! A terminal UI for ad
 use crate::{
-    ORIGINAL_TERMIOS,
     buffer::{Buffer, Chars, GapBuffer},
     config::{ColorScheme, Config},
     config_handle, die,
@@ -8,16 +7,11 @@ use crate::{
     editor::{Click, MiniBufferState},
     input::Event,
     key::{Input, MouseButton, MouseEvent},
-    restore_terminal_state,
     syntax::{LineIter, RangeToken},
-    term::{
-        CurShape, Cursor, RESET_STYLE, Style, Styles, clear_screen, enable_alternate_screen,
-        enable_bracketed_paste, enable_mouse_support, enable_raw_mode, get_termios, get_termsize,
-        register_signal_handler, win_size_changed,
-    },
     ui::{
         Layout, StateChange, UserInterface,
         layout::{Column, Scratch, Window},
+        style::{CurShape, Styles},
     },
     ziplist,
 };
@@ -35,6 +29,14 @@ use std::{
 };
 use tracing::debug;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+pub mod term;
+
+use term::{
+    AnsiStyle, CursorAction, ORIGINAL_TERMIOS, RESET_STYLE, clear_screen, enable_alternate_screen,
+    enable_bracketed_paste, enable_mouse_support, enable_raw_mode, get_termios, get_termsize,
+    register_signal_handler, restore_terminal_state, win_size_changed,
+};
 
 // If the screen dimensions drop below these values then we disable rendering
 const MIN_COLS: usize = 20;
@@ -289,7 +291,7 @@ impl<W: Write> UserInterface for GenericTui<W> {
     }
 
     fn set_cursor_shape(&mut self, cur_shape: CurShape) {
-        if let Err(e) = self.stdout.write_all(cur_shape.to_string().as_bytes()) {
+        if let Err(e) = self.stdout.write_all(cur_shape.as_ansi().as_bytes()) {
             // In this situation we're probably not going to be able to do all that much
             // but we might as well try
             die!("Unable to write to stdout: {e}");
@@ -329,7 +331,7 @@ impl Frame {
     }
 
     fn write(&self, w: &mut impl Write) -> io::Result<()> {
-        write!(w, "{}{}", Cursor::Hide, Cursor::ToStart)?;
+        write!(w, "{}{}", CursorAction::Hide, CursorAction::ToStart)?;
         w.write_all(self.win_lines.as_bytes())?;
         w.write_all(self.status_bar.as_bytes())?;
         if self.show_mb {
@@ -342,19 +344,24 @@ impl Frame {
         write!(
             w,
             "{}{}",
-            Cursor::To(self.cur_x + 1, self.cur_y + 1),
-            Cursor::Show
+            CursorAction::To(self.cur_x + 1, self.cur_y + 1),
+            CursorAction::Show
         )
     }
 
     fn write_msg_bar(&self, w: &mut impl Write) -> io::Result<()> {
-        write!(w, "{}{}", Cursor::Hide, Cursor::To(1, self.screen_rows + 2))?;
+        write!(
+            w,
+            "{}{}",
+            CursorAction::Hide,
+            CursorAction::To(1, self.screen_rows + 2)
+        )?;
         w.write_all(self.msg_bar.as_bytes())?;
         write!(
             w,
             "{}{}",
-            Cursor::To(self.cur_x + 1, self.cur_y + 1),
-            Cursor::Show
+            CursorAction::To(self.cur_x + 1, self.cur_y + 1),
+            CursorAction::Show
         )
     }
 
@@ -386,12 +393,12 @@ impl Frame {
                 (remaining, prev_col) =
                     cr.render_next_line(&mut self.win_lines, prev_col, &mut self.style_cache);
                 if i == n_cols - 1 && !remaining {
-                    _ = write!(&mut self.win_lines, "{}\r\n", Cursor::ClearRight);
+                    _ = write!(&mut self.win_lines, "{}\r\n", CursorAction::ClearRight);
                     break 'outer;
                 }
             }
 
-            _ = write!(&mut self.win_lines, "{}\r\n", Cursor::ClearRight);
+            _ = write!(&mut self.win_lines, "{}\r\n", CursorAction::ClearRight);
         }
     }
 
@@ -432,9 +439,9 @@ impl Frame {
         _ = write!(
             &mut self.status_bar,
             "{}{}{lstatus}{rstatus:>width$}{}\r\n",
-            Style::Bg(cs.bar_bg),
-            Style::Fg(cs.fg),
-            Style::Reset
+            AnsiStyle::Bg(cs.bar_bg),
+            AnsiStyle::Fg(cs.fg),
+            AnsiStyle::Reset
         );
     }
 
@@ -448,7 +455,7 @@ impl Frame {
         last_status: Instant,
     ) {
         self.msg_bar.clear();
-        self.msg_bar.push_str(&Cursor::ClearRight.to_string());
+        self.msg_bar.push_str(&CursorAction::ClearRight.to_string());
         msg.truncate(self.screen_cols.saturating_sub(10));
 
         let pending = render_pending(pending_keys);
@@ -462,16 +469,16 @@ impl Frame {
             _ = write!(
                 &mut self.msg_bar,
                 "{}{}{msg}{pending:>width$}          ",
-                Style::Fg(cs.fg),
-                Style::Bg(cs.bg)
+                AnsiStyle::Fg(cs.fg),
+                AnsiStyle::Bg(cs.bg)
             );
         } else {
             let width = self.screen_cols.saturating_sub(10);
             _ = write!(
                 &mut self.msg_bar,
                 "{}{}{pending:>width$}          ",
-                Style::Fg(cs.fg),
-                Style::Bg(cs.bg)
+                AnsiStyle::Fg(cs.fg),
+                AnsiStyle::Bg(cs.bg)
             );
         }
     }
@@ -503,6 +510,7 @@ impl Frame {
                         bg: Some(bg),
                         ..Default::default()
                     }
+                    .as_ansi()
                 );
 
                 render_chars(
@@ -515,22 +523,26 @@ impl Frame {
                 );
 
                 if cols < self.screen_cols {
-                    self.mb_lines.push_str(&Style::Bg(bg).to_string());
+                    self.mb_lines.push_str(&AnsiStyle::Bg(bg).to_string());
                 }
 
                 let width = self.screen_cols;
-                _ = write!(&mut self.mb_lines, "{:>width$}\r\n", Cursor::ClearRight);
+                _ = write!(
+                    &mut self.mb_lines,
+                    "{:>width$}\r\n",
+                    CursorAction::ClearRight
+                );
             }
         }
 
         _ = write!(
             &mut self.mb_lines,
             "{}{}{}{}{}",
-            Style::Fg(cs.fg),
-            Style::Bg(cs.bg),
+            AnsiStyle::Fg(cs.fg),
+            AnsiStyle::Bg(cs.bg),
             mb.prompt,
             mb.input,
-            Cursor::ClearRight
+            CursorAction::ClearRight
         );
     }
 
@@ -664,8 +676,8 @@ impl<'a> ColRenderer<'a> {
             _ = write!(
                 buf,
                 "{}{}{left_edge}{}",
-                Style::Fg(self.cs.minibuffer_hl),
-                Style::Bg(self.cs.bg),
+                AnsiStyle::Fg(self.cs.minibuffer_hl),
+                AnsiStyle::Bg(self.cs.bg),
                 H_STR.repeat(self.n_cols)
             );
             Some(PrevCol::Hline)
@@ -709,8 +721,8 @@ impl<'a> WinRenderer<'a> {
             _ = write!(
                 buf,
                 "{}{}{left_edge}",
-                Style::Fg(self.cs.minibuffer_hl),
-                Style::Bg(self.cs.bg)
+                AnsiStyle::Fg(self.cs.minibuffer_hl),
+                AnsiStyle::Bg(self.cs.bg)
             );
         }
 
@@ -719,9 +731,9 @@ impl<'a> WinRenderer<'a> {
                 _ = write!(
                     buf,
                     "{}{}~ {V_STR:>width$}{}",
-                    Style::Fg(self.cs.signcol_fg),
-                    Style::Bg(self.cs.bg),
-                    Style::Fg(self.cs.fg),
+                    AnsiStyle::Fg(self.cs.signcol_fg),
+                    AnsiStyle::Bg(self.cs.bg),
+                    AnsiStyle::Fg(self.cs.fg),
                     width = self.w_lnum
                 );
                 let padding = self.n_cols.saturating_sub(self.w_lnum).saturating_sub(2);
@@ -735,8 +747,8 @@ impl<'a> WinRenderer<'a> {
                 _ = write!(
                     buf,
                     "{}{} {:>width$}{V_STR}",
-                    Style::Fg(self.cs.signcol_fg),
-                    Style::Bg(self.cs.bg),
+                    AnsiStyle::Fg(self.cs.signcol_fg),
+                    AnsiStyle::Bg(self.cs.bg),
                     file_row + 1,
                     width = self.w_lnum
                 );
@@ -906,7 +918,7 @@ fn render_line<'a>(
         let style_str = match style_cache.get(tk.tag) {
             Some(s) => s,
             None => {
-                let s = cs.styles_for(tk.tag).to_string();
+                let s = cs.styles_for(tk.tag).as_ansi();
                 style_cache.insert(tk.tag.to_string(), s);
                 style_cache.get(tk.tag).unwrap()
             }
@@ -921,7 +933,7 @@ fn render_line<'a>(
     }
 
     if cols < max_cols {
-        buf.push_str(&Style::Bg(cs.bg).to_string());
+        buf.push_str(&AnsiStyle::Bg(cs.bg).to_string());
         buf.extend(repeat_n(' ', max_cols - cols));
     }
 }
@@ -1188,7 +1200,7 @@ mod tests {
 
         let expected = expected_template
             .replace("$", RESET_STYLE)
-            .replace("#", &Style::Bg(cs.bg).to_string());
+            .replace("#", &AnsiStyle::Bg(cs.bg).to_string());
 
         assert_eq!(s, expected);
     }
