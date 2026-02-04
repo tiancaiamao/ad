@@ -16,9 +16,14 @@ type Client struct {
 	conn *client.Conn
 	fsys *client.Fsys
 	ns   string
+	debug bool
 }
 
 func NewClient() (*Client, error) {
+	return NewClientWithDebug(false)
+}
+
+func NewClientWithDebug(debug bool) (*Client, error) {
 	socketPath := findAdSocket()
 	if socketPath == "" {
 		return nil, fmt.Errorf("unable to find ad socket")
@@ -43,9 +48,10 @@ func NewClient() (*Client, error) {
 	}
 
 	return &Client{
-		conn: conn,
-		fsys: fsys,
-		ns:   ns,
+		conn:  conn,
+		fsys:  fsys,
+		ns:    ns,
+		debug: debug,
 	}, nil
 }
 
@@ -57,6 +63,18 @@ func (c *Client) Close() error {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+// SetDebug sets the debug flag for logging.
+func (c *Client) SetDebug(debug bool) {
+	c.debug = debug
+}
+
+// debugLog logs a message if debug is enabled.
+func (c *Client) debugLog(format string, args ...interface{}) {
+	if c.debug {
+		log.Printf(format, args...)
+	}
 }
 
 func (c *Client) ReadFile(path string) (string, error) {
@@ -103,7 +121,12 @@ func (c *Client) OpenInNewWindow(path string) (string, error) {
 		return "", fmt.Errorf("get current buffer: %w", err)
 	}
 
-	return strings.TrimSpace(bufferID), nil
+	trimmed := strings.TrimSpace(bufferID)
+	c.debugLog("[OPEN-NEW-WINDOW] Raw buffer ID: %q", bufferID)
+	c.debugLog("[OPEN-NEW-WINDOW] Trimmed: %q (length: %d)", trimmed, len(trimmed))
+	c.debugLog("[OPEN-NEW-WINDOW] Event file path will be: buffers/%s/event", trimmed)
+
+	return trimmed, nil
 }
 
 // WriteBody appends content to a buffer's body
@@ -122,6 +145,16 @@ func (c *Client) ReadBody(bufferID string) (string, error) {
 // AppendToBody appends content to a buffer's body
 func (c *Client) AppendToBody(bufferID, content string) error {
 	return c.WriteBody(bufferID, content)
+}
+
+// AppendToBodyWithSource appends content to a buffer's body and marks it clean
+// This is useful for output from the interpreter to avoid triggering event loops
+func (c *Client) AppendToBodyWithSource(bufferID, content string, source EventSource) error {
+	if err := c.WriteBody(bufferID, content); err != nil {
+		return err
+	}
+	// Mark clean to indicate this was our own write
+	return c.MarkClean(bufferID)
 }
 
 // WriteAddr sets the addr of a buffer
@@ -224,6 +257,27 @@ func (c *Client) CenterViewport(bufferID string) error {
 	return nil
 }
 
+// ScrollToBottom scrolls a buffer to show the last line
+// Unlike CenterViewport, this doesn't save/restore focus
+func (c *Client) ScrollToBottom(bufferID string) error {
+	if err := c.WriteAddr(bufferID, "$"); err != nil {
+		return fmt.Errorf("write addr: %w", err)
+	}
+	if err := c.SetViewport("viewport-bottom"); err != nil {
+		return fmt.Errorf("viewport-bottom: %w", err)
+	}
+	return nil
+}
+
+// FocusAndScroll focuses the buffer and scrolls to bottom
+// Use this when you want to show the buffer to the user
+func (c *Client) FocusAndScroll(bufferID string) error {
+	if err := c.FocusBuffer(bufferID); err != nil {
+		return fmt.Errorf("focus buffer %s: %w", bufferID, err)
+	}
+	return c.ScrollToBottom(bufferID)
+}
+
 // BodyWriter returns an io.Writer for writing to a buffer's body
 func (c *Client) BodyWriter(bufferID string) *BodyWriter {
 	return &BodyWriter{
@@ -235,25 +289,40 @@ func (c *Client) BodyWriter(bufferID string) *BodyWriter {
 // RunEventFilter runs an event filter on a buffer
 // This continuously reads events from the buffer's event file and dispatches them to the handler
 func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
+	c.debugLog("[RUN-EVENT-FILTER] Starting event filter")
+	c.debugLog("[RUN-EVENT-FILTER] Buffer ID: %s", bufferID)
+
 	eventPath := fmt.Sprintf("buffers/%s/event", bufferID)
+	c.debugLog("[RUN-EVENT-FILTER] Event path: %s", eventPath)
 
 	// Open the event file with Open() to get a Fid for streaming reads
+	// This triggers ad to attach an input filter to the buffer
+	c.debugLog("[RUN-EVENT-FILTER] Opening event file (OREAD mode)...")
 	fid, err := c.fsys.Open(eventPath, plan9.OREAD)
 	if err != nil {
+		c.debugLog("[RUN-EVENT-FILTER] Open FAILED: %v", err)
 		return fmt.Errorf("open %s: %w", eventPath, err)
 	}
 	defer fid.Close()
+
+	c.debugLog("[RUN-EVENT-FILTER] Event file opened successfully")
+	c.debugLog("[RUN-EVENT-FILTER] Entering event loop (blocking reads)...")
 
 	// Read events line by line using blocking reads
 	// The event file will block until new events are available
 	buf := make([]byte, 8192)
 	remainder := ""
+	readCount := 0
 
 	for {
 		// Blocking read - will wait for data
 		n, err := fid.Read(buf)
 
 		if n > 0 {
+			c.debugLog("[RUN-EVENT-FILTER] Read %d bytes from event file", n)
+			readCount++
+			c.debugLog("[RUN-EVENT-FILTER] Total reads so far: %d", readCount)
+
 			// Safety check: n should never exceed buffer size
 			if n > len(buf) {
 				return fmt.Errorf("read returned invalid size: %d > %d", n, len(buf))
@@ -272,43 +341,81 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 			}
 
 			// Process complete lines
+			lineCount := 0
 			for _, line := range lines {
 				if line == "" {
 					continue
 				}
 
-				// DEBUG: 打印所有收到的事件
-				log.Printf("[EVENT-RAW] %s", line)
+				lineCount++
+				c.debugLog("[EVENT-RAW] Line %d: %q", lineCount, line)
 
 				var evt FsysEvent
 				if err := json.Unmarshal([]byte(line), &evt); err != nil {
 					// Skip malformed events
-					log.Printf("[EVENT-ERROR] Failed to parse: %v", err)
+					c.debugLog("[EVENT-ERROR] Failed to parse: %v", err)
 					continue
 				}
 
 				// DEBUG: 打印解析后的事件
-				log.Printf("[EVENT] kind=%s source=%s txt=%q", evt.Kind, evt.Source, evt.Txt)
+				c.debugLog("[EVENT] kind=%s source=%s txt=%q", evt.Kind, evt.Source, evt.Txt)
+
+				// Convert string source to EventSource
+				var src EventSource
+				switch evt.Source {
+				case "K":
+					src = SourceKeyboard
+				case "M":
+					src = SourceMouse
+				case "F":
+					src = SourceFsys
+				default:
+					c.debugLog("[EVENT] Unknown source: %s", evt.Source)
+					continue
+				}
 
 				// Dispatch to handler based on event kind
+				var outcome Outcome
 				var handlerErr error
 				switch evt.Kind {
 				case "I": // InsertBody
-					handlerErr = handler.HandleInsert(evt.Source, evt.ChFrom, evt.ChTo, evt.Txt, c)
+					outcome, handlerErr = handler.HandleInsert(src, evt.ChFrom, evt.ChTo, evt.Txt, c)
 				case "D": // DeleteBody
-					handlerErr = handler.HandleDelete(evt.Source, evt.ChFrom, evt.ChTo, c)
+					outcome, handlerErr = handler.HandleDelete(src, evt.ChFrom, evt.ChTo, c)
 				case "X": // ExecuteBody
-					log.Printf("[EVENT] Calling HandleExecute!")
-					handlerErr = handler.HandleExecute(evt.Source, evt.ChFrom, evt.ChTo, evt.Txt, c)
+					c.debugLog("[EVENT] Calling HandleExecute!")
+					outcome, handlerErr = handler.HandleExecute(src, evt.ChFrom, evt.ChTo, evt.Txt, c)
 				case "L": // LoadBody
-					// Write event back to ad for internal processing
-					if err := c.WriteEventBack(bufferID, &evt); err != nil {
-						return err
-					}
+					outcome, handlerErr = Passthrough, nil // Default passthrough for Load
+				default:
+					// Unknown event types are passed through
+					outcome = Passthrough
 				}
 
 				if handlerErr != nil {
 					return handlerErr
+				}
+
+				// Handle event outcomes
+				switch outcome {
+				case Handled:
+					// Event was fully handled, do nothing
+				case Passthrough:
+					// Write event back to ad for internal processing
+					if evt.Kind == "L" || evt.Kind != "I" && evt.Kind != "D" && evt.Kind != "X" {
+						if err := c.WriteEventBack(bufferID, &evt); err != nil {
+							return err
+						}
+					}
+				case PassthroughAndExit:
+					// Write event back and exit
+					if err := c.WriteEventBack(bufferID, &evt); err != nil {
+						return err
+					}
+					return nil
+				case Exit:
+					// Exit without passing event back
+					return nil
 				}
 			}
 		}
@@ -347,11 +454,34 @@ type FsysEvent struct {
 	Txt       string `json:"txt"`
 }
 
+// EventSource identifies the origin of an event
+type EventSource string
+
+const (
+	SourceKeyboard EventSource = "K" // Keyboard input
+	SourceMouse    EventSource = "M" // Mouse input
+	SourceFsys     EventSource = "F" // Filesystem (our own writes)
+)
+
+// Outcome determines how an event should be handled
+type Outcome int
+
+const (
+	// Handled means the event was fully processed and should not be passed back to ad
+	Handled Outcome = iota
+	// Passthrough means the event should be passed back to ad for internal processing
+	Passthrough
+	// PassthroughAndExit means pass the event back to ad and then exit the event filter
+	PassthroughAndExit
+	// Exit means stop the event filter without passing the event back
+	Exit
+)
+
 // EventHandler interface for handling buffer events
 type EventHandler interface {
-	HandleInsert(source string, from, to int, txt string, client *Client) error
-	HandleDelete(source string, from, to int, client *Client) error
-	HandleExecute(source string, from, to int, txt string, client *Client) error
+	HandleInsert(source EventSource, from, to int, txt string, client *Client) (Outcome, error)
+	HandleDelete(source EventSource, from, to int, client *Client) (Outcome, error)
+	HandleExecute(source EventSource, from, to int, txt string, client *Client) (Outcome, error)
 }
 
 // BodyWriter implements io.Writer for writing to a buffer's body
