@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"sync"
 
@@ -90,29 +89,17 @@ func (s *ShellInterpreter) Start(ctx context.Context) error {
 
 // streamOutput reads stdout/stderr and writes to the buffer.
 func (s *ShellInterpreter) streamOutput(ctx context.Context) {
-	fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] === START ===\n")
-	defer fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] === EXIT ===\n")
-
-	fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] stdout=%v stderr=%v\n", s.stdout != nil, s.stderr != nil)
 	merged := io.MultiReader(s.stdout, s.stderr)
 
 	writer := s.GetOutputWriter()
-	fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] GetOutputWriter=%p isNil=%v\n", writer, writer == nil)
-
 	if writer != nil {
-		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Calling CopyReader\n")
 		if err := repl.CopyReader(ctx, merged, writer, 1024); err != nil {
 			if ctx.Err() != nil {
-				fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Context cancelled\n")
 				return
 			}
-			fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] CopyReader error=%v\n", err)
 		}
-		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] CopyReader done\n")
 	} else {
-		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Writer is nil, discarding\n")
-		n, err := io.Copy(io.Discard, merged)
-		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Discarded %d bytes err=%v\n", n, err)
+		io.Copy(io.Discard, merged)
 	}
 }
 
@@ -182,7 +169,6 @@ func (s *ShellInterpreter) Stop() error {
 func (s *ShellInterpreter) Process(ctx context.Context, input string) error {
 	// Input is already present in the buffer (typed or send-to-win), so just
 	// forward it to the subprocess.
-	fmt.Fprintf(os.Stderr, "[SEND-INPUT] %q\n", input)
 	if err := s.SendInput(input); err != nil {
 		return err
 	}

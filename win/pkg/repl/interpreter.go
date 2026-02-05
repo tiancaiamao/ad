@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 )
 
 // Interpreter represents an external command interpreter that can process user input.
@@ -99,7 +98,6 @@ func (b *BaseInterpreter) SetOutputWriter(writer OutputWriter) {
 
 // GetOutputWriter returns the current output writer.
 func (b *BaseInterpreter) GetOutputWriter() OutputWriter {
-	fmt.Fprintf(os.Stderr, "[BASE-INTERPRETER] GetOutputWriter() = %p\n", b.writer)
 	return b.writer
 }
 

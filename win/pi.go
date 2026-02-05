@@ -259,31 +259,38 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 	}
 
 	if len(fields) == 1 || fields[1] == "help" {
-		p.writeControl("win: commands: thinking|tools|prefix [on|off|toggle], status")
+		p.writeControlNoScroll("win: commands: thinking|tools|prefix [on|off|toggle], status, quit")
 		return true, nil
 	}
 
 	switch fields[1] {
 	case "thinking":
 		if err := p.toggleSetting("thinking", fields[2:]); err != nil {
-			p.writeControl(err.Error())
+			p.writeControlNoScroll(err.Error())
 		}
 		return true, nil
 	case "tools":
 		if err := p.toggleSetting("tools", fields[2:]); err != nil {
-			p.writeControl(err.Error())
+			p.writeControlNoScroll(err.Error())
 		}
 		return true, nil
 	case "prefix":
 		if err := p.toggleSetting("prefix", fields[2:]); err != nil {
-			p.writeControl(err.Error())
+			p.writeControlNoScroll(err.Error())
 		}
 		return true, nil
 	case "status":
-		p.writeControl(fmt.Sprintf("win: thinking=%v tools=%v prefix=%v", p.getShowThinking(), p.getShowTools(), p.getShowPrefixes()))
+		p.writeControlNoScroll("=== win display settings ===")
+		p.writeControlNoScroll(fmt.Sprintf("thinking: %v (show AI thinking)", p.getShowThinking()))
+		p.writeControlNoScroll(fmt.Sprintf("tools: %v (show full tool output, tool calls always shown)", p.getShowTools()))
+		p.writeControlNoScroll(fmt.Sprintf("prefix: %v (show 'assistant:', 'thinking:', 'tool:xxx:' labels)", p.getShowPrefixes()))
+		p.writeControlNoScroll("=============================")
 		return true, nil
+	case "quit":
+		p.writeControlNoScroll("win: exiting...")
+		return true, fmt.Errorf("quit requested")
 	default:
-		p.writeControl("win: unknown command")
+		p.writeControlNoScroll("win: unknown command")
 		return true, nil
 	}
 }
@@ -329,7 +336,7 @@ func (p *PiInterpreter) setSetting(name string, value bool) error {
 		return fmt.Errorf("win: unknown setting")
 	}
 	p.stateMu.Unlock()
-	p.writeControl(fmt.Sprintf("win: %s=%v", name, value))
+	p.writeControlNoScroll(fmt.Sprintf("win: %s=%v", name, value))
 	return nil
 }
 
@@ -515,8 +522,15 @@ func (p *PiInterpreter) handleToolStart(line string) {
 		return
 	}
 	p.stateMu.Lock()
-	defer p.stateMu.Unlock()
 	p.toolStates[evt.ToolCallId] = &piToolState{toolName: evt.ToolName}
+	p.stateMu.Unlock()
+
+	// Always show tool call start (even when showTools=false) so user knows pi is working
+	if p.getShowPrefixes() {
+		p.writeRaw(fmt.Sprintf("[calling %s...]", evt.ToolName))
+	} else {
+		p.writeRaw(fmt.Sprintf("[%s...]", evt.ToolName))
+	}
 }
 
 func (p *PiInterpreter) handleToolUpdate(line string) {
@@ -566,18 +580,47 @@ func (p *PiInterpreter) handleToolUpdate(line string) {
 }
 
 func (p *PiInterpreter) handleToolEnd(line string) {
-	if !p.getShowTools() {
-		return
-	}
-
 	var evt rpcToolEnd
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
 		return
 	}
 
-	output := p.toolResultText(evt.Result)
+	// Get tool state for name
 	p.stateMu.Lock()
 	state := p.toolStates[evt.ToolCallId]
+	toolName := ""
+	if state != nil {
+		toolName = state.toolName
+	}
+	p.stateMu.Unlock()
+
+	// Always print tool end (even when showTools=false) so user knows it's done
+	if toolName != "" {
+		if evt.IsError {
+			if p.getShowPrefixes() {
+				p.writeRaw(fmt.Sprintf("[%s error]\n", toolName))
+			} else {
+				p.writeRaw("[error]\n")
+			}
+		} else {
+			if p.getShowPrefixes() {
+				p.writeRaw(fmt.Sprintf("[%s done]\n", toolName))
+			} else {
+				p.writeRaw("[done]\n")
+			}
+		}
+	}
+
+	// Only show tool output if showTools=true
+	if !p.getShowTools() {
+		p.stateMu.Lock()
+		delete(p.toolStates, evt.ToolCallId)
+		p.stateMu.Unlock()
+		return
+	}
+
+	output := p.toolResultText(evt.Result)
+	p.stateMu.Lock()
 	if state == nil {
 		state = &piToolState{toolName: evt.ToolName}
 		p.toolStates[evt.ToolCallId] = state
@@ -678,6 +721,13 @@ func (p *PiInterpreter) writeControl(msg string) {
 	p.writeRaw("\n")
 }
 
+// writeControlNoScroll writes a control message without scrolling.
+// Use this in event handlers to avoid deadlock.
+func (p *PiInterpreter) writeControlNoScroll(msg string) {
+	p.writeRawNoScroll(msg)
+	p.writeRawNoScroll("\n")
+}
+
 func (p *PiInterpreter) writeRaw(s string) {
 	writer := p.GetOutputWriter()
 	if writer == nil || s == "" {
@@ -685,6 +735,15 @@ func (p *PiInterpreter) writeRaw(s string) {
 	}
 	_ = writer.Write(s)
 	_ = writer.ScrollToBottom()
+}
+
+// writeRawNoScroll writes without scrolling to avoid deadlock in event handlers.
+func (p *PiInterpreter) writeRawNoScroll(s string) {
+	writer := p.GetOutputWriter()
+	if writer == nil || s == "" {
+		return
+	}
+	_ = writer.Write(s)
 }
 
 func (p *PiInterpreter) getStreaming() bool {
