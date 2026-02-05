@@ -375,6 +375,9 @@ impl Layout {
             }
         }
 
+        // Clamp scroll positions after buffer deletion to ensure row_off values are valid
+        self.clamp_scroll();
+
         #[cfg(test)]
         assert_invariants!(self);
 
@@ -1365,6 +1368,14 @@ impl Layout {
             let b = self.buffers.with_id_mut(bufid).unwrap_or_else(|| {
                 die!("invalid buffer ID {bufid}");
             });
+
+            // Clamp from to valid range to prevent index out of bounds errors
+            let len_lines = b.txt.len_lines();
+            let from = if len_lines > 0 {
+                min(from, len_lines - 1)
+            } else {
+                0
+            };
 
             b.update_ts_state(from, n_rows);
         }
@@ -2605,5 +2616,59 @@ mod tests {
         let view = l.focused_view();
         assert_eq!(b.len_chars(), 0);
         assert_eq!(view.cur.idx, 0, "View cursor should be clamped to buffer length");
+    }
+
+    #[test]
+    fn close_buffer_clamps_row_off() {
+        // Regression test for panic when:
+        // 1. A buffer with many lines (224 lines) has a window with row_off=224
+        // 2. The buffer is deleted
+        // 3. A replacement buffer with few lines (28 lines) is created
+        // 4. Window's row_off is NOT clamped to the new buffer's line count
+        // 5. update_visible_ts_state is called, which tries to access line 224
+        //
+        // Before the fix, this would panic with:
+        // "index out of bounds: the len is 28 but the index is 224"
+
+        let mut l = test_layout(&[1, 2], 80, 100);
+
+        // Get the second buffer (id = 1)
+        let bufid_to_close = 1;
+
+        // Set a large row_off on the window showing buffer 1
+        {
+            let (_, col) = l.cols.iter_mut().nth(1).unwrap();
+            let (_, win) = col.wins.iter_mut().next().unwrap();
+            win.view.row_off = 224;
+        }
+
+        // Verify row_off is set
+        {
+            let (_, col) = l.cols.iter().nth(1).unwrap();
+            let (_, win) = col.wins.iter().next().unwrap();
+            assert_eq!(win.view.row_off, 224);
+        }
+
+        // Close the buffer - this should clamp row_off
+        l.close_buffer(bufid_to_close);
+
+        // After close_buffer, all remaining windows should have valid row_off
+        for (_, col) in l.cols.iter() {
+            for (_, win) in col.wins.iter() {
+                let b = l.buffers.with_id(win.view.bufid).unwrap();
+                let len_lines = b.txt.len_lines();
+                let max_row_off = if len_lines > 0 { len_lines - 1 } else { 0 };
+                assert!(
+                    win.view.row_off <= max_row_off,
+                    "row_off {} exceeds max {} for buffer {}",
+                    win.view.row_off,
+                    max_row_off,
+                    win.view.bufid
+                );
+            }
+        }
+
+        // update_visible_ts_state should not panic
+        l.update_visible_ts_state();
     }
 }
