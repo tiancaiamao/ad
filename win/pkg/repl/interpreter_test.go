@@ -98,11 +98,11 @@ func TestStreamingWriter(t *testing.T) {
 
 // mockOutputWriter for testing
 type mockOutputWriter struct {
-	writeCount    int
-	promptCount   int
-	scrollCount   int
-	flushCount    int
-	lastOutput    string
+	writeCount  int
+	promptCount int
+	scrollCount int
+	flushCount  int
+	lastOutput  string
 }
 
 func (m *mockOutputWriter) Write(output string) error {

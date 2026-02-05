@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 )
 
 // Interpreter represents an external command interpreter that can process user input.
@@ -65,6 +66,13 @@ type AsyncInterpreter interface {
 	SendInput(input string) error
 }
 
+// ControlInterpreter optionally handles control commands (e.g. toggles) locally
+// without forwarding them to the external interpreter.
+type ControlInterpreter interface {
+	// HandleControl processes a control command. Returns true if handled.
+	HandleControl(input string) (bool, error)
+}
+
 // BaseInterpreter provides common functionality for interpreter implementations.
 type BaseInterpreter struct {
 	streaming bool
@@ -85,11 +93,13 @@ func (b *BaseInterpreter) IsStreaming() bool {
 
 // SetOutputWriter sets the output writer for streaming output.
 func (b *BaseInterpreter) SetOutputWriter(writer OutputWriter) {
+// 	fmt.Fprintf(os.Stderr, "[BASE-INTERPRETER] SetOutputWriter(%p)\n", writer)
 	b.writer = writer
 }
 
 // GetOutputWriter returns the current output writer.
 func (b *BaseInterpreter) GetOutputWriter() OutputWriter {
+	fmt.Fprintf(os.Stderr, "[BASE-INTERPRETER] GetOutputWriter() = %p\n", b.writer)
 	return b.writer
 }
 
@@ -175,9 +185,9 @@ func (s *SimpleSyncInterpreter) Process(ctx context.Context, input string) error
 
 // StreamingWriter wraps an OutputWriter with buffering for efficiency.
 type StreamingWriter struct {
-	writer      OutputWriter
-	buffer      []byte
-	bufferLen   int
+	writer         OutputWriter
+	buffer         []byte
+	bufferLen      int
 	flushThreshold int
 }
 

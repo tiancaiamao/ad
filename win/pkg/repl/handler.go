@@ -23,6 +23,24 @@ type Config struct {
 	// WelcomeMessage is shown when the REPL starts.
 	WelcomeMessage string
 
+	// SendPrefix is the prefix used by send-to-win for external commands.
+	// If empty, defaults to Prompt.
+	SendPrefix string
+
+	// InputPrefix is an interpreter prompt prefix to strip from user input.
+	// Example: "#> " will strip "0 #> " from cora prompts.
+	InputPrefix string
+
+	// EchoSendInput controls whether send-to-win input stays in the buffer.
+	// If false, the injected line will be removed before executing.
+	EchoSendInput bool
+
+	// EnableKeyboardExecute controls whether pressing Enter executes input.
+	EnableKeyboardExecute bool
+
+	// EnableExecute controls whether Execute (X) events trigger execution.
+	EnableExecute bool
+
 	// Debug enables debug logging.
 	Debug bool
 
@@ -38,43 +56,57 @@ func DefaultConfig() Config {
 		WelcomeMessage: `# REPL
 # Type commands and press Enter to execute.
 `,
-		Debug:   false,
-		LogPath: "/tmp/repl.log",
+		SendPrefix:            "",
+		InputPrefix:           "",
+		EchoSendInput:         true,
+		EnableKeyboardExecute: true,
+		EnableExecute:         true,
+		Debug:                 false,
+		LogPath:               "/tmp/repl.log",
 	}
 }
 
 // Handler manages a REPL session with ad.
 type Handler struct {
-	config     Config
-	client     *ad.Client
-	bufferID   string
+	config      Config
+	client      *ad.Client
+	bufferID    string
 	interpreter Interpreter
-	outputChan chan string
-	doneChan   chan struct{}
-	mu         sync.Mutex
-	ctx        context.Context
-	cancel     context.CancelFunc
+	outputChan  chan string
+	doneChan    chan struct{}
+	mu          sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewHandler creates a new REPL handler.
 func NewHandler(config Config, client *ad.Client, interpreter Interpreter) (*Handler, error) {
 	if config.Prompt == "" {
-		config.Prompt = "> "
+		// Allow empty prompt (useful when interpreter owns the prompt)
 	}
 	if config.WindowName == "" {
 		config.WindowName = "+repl"
+	}
+	if config.SendPrefix == "" {
+		config.SendPrefix = config.Prompt
+	}
+	if !config.EnableKeyboardExecute {
+		// Explicitly allow disabling keyboard-triggered execution.
+	}
+	if !config.EnableExecute {
+		// Explicitly allow disabling Execute (X) events.
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	handler := &Handler{
-		config:     config,
-		client:     client,
+		config:      config,
+		client:      client,
 		interpreter: interpreter,
-		outputChan: make(chan string, 100),
-		doneChan:   make(chan struct{}),
-		ctx:        ctx,
-		cancel:     cancel,
+		outputChan:  make(chan string, 100),
+		doneChan:    make(chan struct{}),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	handler.client.SetDebug(config.Debug)
@@ -222,6 +254,10 @@ func (h *Handler) WritePrompt() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if h.config.Prompt == "" {
+		return nil
+	}
+
 	// Add newline before prompt
 	if err := h.client.AppendToBodyWithSource(h.bufferID, "\n", ad.SourceFsys); err != nil {
 		return fmt.Errorf("write newline before prompt: %w", err)
@@ -244,8 +280,25 @@ func (h *Handler) ScrollToBottom() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if err := h.client.ScrollToBottom(h.bufferID); err != nil {
-		return fmt.Errorf("scroll to bottom: %w", err)
+	currentBuffer, err := h.client.GetCurrentBuffer()
+	if err != nil {
+		if err := h.client.ScrollToBottom(h.bufferID); err != nil {
+			return fmt.Errorf("scroll to bottom: %w", err)
+		}
+	} else {
+		if currentBuffer != h.bufferID {
+			if err := h.client.FocusBuffer(h.bufferID); err != nil {
+				return fmt.Errorf("focus buffer %s: %w", h.bufferID, err)
+			}
+		}
+		if err := h.client.ScrollToBottom(h.bufferID); err != nil {
+			return fmt.Errorf("scroll to bottom: %w", err)
+		}
+		if currentBuffer != h.bufferID {
+			if err := h.client.FocusBuffer(currentBuffer); err != nil {
+				return fmt.Errorf("restore focus %s: %w", currentBuffer, err)
+			}
+		}
 	}
 
 	if h.config.Debug {
@@ -320,6 +373,33 @@ func (h *Handler) ExtractLastLine(body string) string {
 	return strings.TrimSpace(strings.TrimPrefix(lastLine, h.config.Prompt))
 }
 
+func (h *Handler) deleteLastSendToWinInsert() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// send-to-win writes a line plus a blank line, so remove the last two lines.
+	if err := h.client.WriteXAddr(h.bufferID, "$-1,$"); err != nil {
+		return fmt.Errorf("write xaddr: %w", err)
+	}
+	if err := h.client.WriteXDot(h.bufferID, ""); err != nil {
+		return fmt.Errorf("write xdot: %w", err)
+	}
+	if err := h.client.WriteAddr(h.bufferID, "$"); err != nil {
+		return fmt.Errorf("write addr: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) stripInputPrefix(input string) string {
+	if h.config.InputPrefix == "" {
+		return input
+	}
+	if idx := strings.LastIndex(input, h.config.InputPrefix); idx != -1 {
+		return strings.TrimSpace(input[idx+len(h.config.InputPrefix):])
+	}
+	return input
+}
+
 // adOutputWriter implements OutputWriter for writing to an ad buffer.
 type adOutputWriter struct {
 	handler *Handler
@@ -369,12 +449,29 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 	}
 
 	if source == ad.SourceFsys {
-		if strings.HasPrefix(txt, e.handler.config.Prompt) {
-			input := strings.TrimSpace(strings.TrimPrefix(txt, e.handler.config.Prompt))
+		if e.handler.config.SendPrefix != "" && strings.HasPrefix(txt, e.handler.config.SendPrefix) {
+			input := strings.TrimSpace(strings.TrimPrefix(txt, e.handler.config.SendPrefix))
 			input = strings.TrimRight(input, "\n")
 			if input != "" {
 				if e.handler.config.Debug {
 					log.Printf("[HANDLE-INSERT] External command from send-to-win: %q", input)
+				}
+				if ctrl, ok := e.handler.interpreter.(ControlInterpreter); ok {
+					handled, err := ctrl.HandleControl(input)
+					if err != nil {
+						return ad.Handled, err
+					}
+					if handled {
+						if err := e.handler.deleteLastSendToWinInsert(); err != nil && e.handler.config.Debug {
+							log.Printf("[HANDLE-INSERT] delete send-to-win text failed: %v", err)
+						}
+						return ad.Handled, nil
+					}
+				}
+				if !e.handler.config.EchoSendInput {
+					if err := e.handler.deleteLastSendToWinInsert(); err != nil && e.handler.config.Debug {
+						log.Printf("[HANDLE-INSERT] delete send-to-win text failed: %v", err)
+					}
 				}
 				return ad.Handled, e.handler.ExecuteCommand(input, true)
 			}
@@ -390,6 +487,9 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 	}
 
 	if source == ad.SourceKeyboard && txt == "\n" {
+		if !e.handler.config.EnableKeyboardExecute {
+			return ad.Handled, nil
+		}
 		if e.handler.config.Debug {
 			log.Println("[HANDLE-INSERT] User pressed Enter")
 		}
@@ -411,6 +511,7 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 		}
 
 		input := e.handler.ExtractLastLine(body)
+		input = e.handler.stripInputPrefix(input)
 		if e.handler.config.Debug {
 			log.Printf("[HANDLE-INSERT] Extracted input: %q", input)
 		}
@@ -443,6 +544,9 @@ func (e *replEventHandler) HandleDelete(source ad.EventSource, from, to int, cli
 
 // HandleExecute implements ad.EventHandler.HandleExecute.
 func (e *replEventHandler) HandleExecute(source ad.EventSource, from, to int, txt string, client *ad.Client) (ad.Outcome, error) {
+	if !e.handler.config.EnableExecute {
+		return ad.Handled, nil
+	}
 	input := strings.TrimSpace(txt)
 
 	if e.handler.config.Debug {

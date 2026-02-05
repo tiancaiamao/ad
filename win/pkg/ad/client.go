@@ -13,9 +13,9 @@ import (
 )
 
 type Client struct {
-	conn *client.Conn
-	fsys *client.Fsys
-	ns   string
+	conn  *client.Conn
+	fsys  *client.Fsys
+	ns    string
 	debug bool
 }
 
@@ -197,6 +197,13 @@ func (c *Client) ReadXDot(bufferID string) (string, error) {
 	return c.ReadFile(path)
 }
 
+// WriteXDot replaces the xdot contents of a buffer.
+func (c *Client) WriteXDot(bufferID, content string) error {
+	path := fmt.Sprintf("buffers/%s/xdot", bufferID)
+	_, err := c.WriteFile(path, []byte(content))
+	return err
+}
+
 // MarkClean marks a buffer as clean
 func (c *Client) MarkClean(bufferID string) error {
 	_, err := c.WriteFile("ctl", []byte("mark-clean"))
@@ -327,7 +334,7 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 			if n > len(buf) {
 				return fmt.Errorf("read returned invalid size: %d > %d", n, len(buf))
 			}
-			
+
 			// Append to remainder and split by newlines
 			data := remainder + string(buf[:n])
 			lines := strings.Split(data, "\n")

@@ -9,7 +9,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -91,33 +90,35 @@ func (s *ShellInterpreter) Start(ctx context.Context) error {
 
 // streamOutput reads stdout/stderr and writes to the buffer.
 func (s *ShellInterpreter) streamOutput(ctx context.Context) {
-	// Merge stdout and stderr
+	fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] === START ===\n")
+	defer fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] === EXIT ===\n")
+
+	fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] stdout=%v stderr=%v\n", s.stdout != nil, s.stderr != nil)
 	merged := io.MultiReader(s.stdout, s.stderr)
 
-	// Get the output writer from BaseInterpreter
 	writer := s.GetOutputWriter()
+	fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] GetOutputWriter=%p isNil=%v\n", writer, writer == nil)
 
-	// Use CopyReader to stream output to buffer
 	if writer != nil {
+		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Calling CopyReader\n")
 		if err := repl.CopyReader(ctx, merged, writer, 1024); err != nil {
 			if ctx.Err() != nil {
-				// Context cancelled, expected
+				fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Context cancelled\n")
 				return
 			}
-			fmt.Fprintf(os.Stderr, "Stream output error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] CopyReader error=%v\n", err)
 		}
+		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] CopyReader done\n")
 	} else {
-		// No writer, just discard output
-		io.Copy(io.Discard, merged)
+		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Writer is nil, discarding\n")
+		n, err := io.Copy(io.Discard, merged)
+		fmt.Fprintf(os.Stderr, "[STREAM-OUTPUT] Discarded %d bytes err=%v\n", n, err)
 	}
 }
 
 // GetOutputWriter returns the configured output writer.
 func (s *ShellInterpreter) GetOutputWriter() repl.OutputWriter {
-	// We need to access the writer from BaseInterpreter
-	// Since writer is private, we'll add a method to BaseInterpreter
-	// For now, return nil and fix this properly
-	return nil
+	return s.BaseInterpreter.GetOutputWriter()
 }
 
 // SendInput sends a command to the shell.
@@ -179,62 +180,16 @@ func (s *ShellInterpreter) Stop() error {
 
 // Process implements Interpreter.Process.
 func (s *ShellInterpreter) Process(ctx context.Context, input string) error {
-	return s.BaseInterpreter.Process(ctx, input)
+	// Input is already present in the buffer (typed or send-to-win), so just
+	// forward it to the subprocess.
+	fmt.Fprintf(os.Stderr, "[SEND-INPUT] %q\n", input)
+	if err := s.SendInput(input); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SetOutputWriter implements AsyncInterpreter.SetOutputWriter.
 func (s *ShellInterpreter) SetOutputWriter(writer repl.OutputWriter) {
 	s.BaseInterpreter.SetOutputWriter(writer)
-}
-
-// SimpleSyncShell is a synchronous shell interpreter (one-shot commands).
-type SimpleSyncShell struct {
-	*repl.SimpleSyncInterpreter
-	shell string
-}
-
-// NewSimpleSyncShell creates a simple sync shell interpreter.
-func NewSimpleSyncShell(shell string) *SimpleSyncShell {
-	sync := repl.NewSimpleSyncInterpreter(func(ctx context.Context, input string) (string, error) {
-		// Run the command
-		cmd := exec.CommandContext(ctx, shell, "-c", input)
-
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		if err := cmd.Run(); err != nil {
-			// Return stderr as output for errors
-			if stderr.String() != "" {
-				return stderr.String(), nil
-			}
-			return "", err
-		}
-
-		return stdout.String(), nil
-	})
-
-	return &SimpleSyncShell{
-		SimpleSyncInterpreter: sync,
-		shell:                 shell,
-	}
-}
-
-func main() {
-	// Example 1: Async shell (persistent session)
-	fmt.Println("=== Async Shell REPL (persistent) ===")
-	asyncShell, err := NewShellInterpreter("zsh", "-i")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating async shell: %v\n", err)
-		os.Exit(1)
-	}
-	defer asyncShell.Stop()
-
-	// Example 2: Sync shell (one-shot commands)
-	fmt.Println("\n=== Sync Shell REPL (one-shot) ===")
-	syncShell := NewSimpleSyncShell("zsh")
-
-	// For demonstration, just print info
-	fmt.Printf("Async shell: streaming=%v\n", asyncShell.IsStreaming())
-	fmt.Printf("Sync shell: streaming=%v\n", syncShell.IsStreaming())
 }
