@@ -38,12 +38,28 @@ type PiInterpreter struct {
 	currentMessageStreamed bool
 
 	toolStates map[string]*piToolState
+
+	// Model management
+	availableModels      []Model
+	currentModelID       string
+	currentModelProvider string
 }
 
 type piToolState struct {
 	toolName      string
 	lastOutput    string
 	prefixWritten bool
+}
+
+type Model struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Provider      string   `json:"provider"`
+	API           string   `json:"api"`
+	Reasoning     bool     `json:"reasoning"`
+	Input         []string `json:"input"`
+	ContextWindow int      `json:"contextWindow"`
+	MaxTokens     int      `json:"maxTokens"`
 }
 
 type piCommand struct {
@@ -61,6 +77,24 @@ type rpcResponse struct {
 	Command string `json:"command"`
 	Success bool   `json:"success"`
 	Error   string `json:"error"`
+}
+
+type rpcModelResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Models []Model `json:"models"`
+	} `json:"data"`
+}
+
+type rpcSetModelResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    Model  `json:"data"`
 }
 
 type rpcMessage struct {
@@ -259,7 +293,7 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 	}
 
 	if len(fields) == 1 || fields[1] == "help" {
-		p.writeControlNoScroll("win: commands: thinking|tools|prefix [on|off|toggle], status, quit")
+		p.writeControlNoScroll("win: commands: thinking|tools|prefix [on|off|toggle], status, quit, models, model [id|num], model-select")
 		return true, nil
 	}
 
@@ -280,15 +314,23 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 		}
 		return true, nil
 	case "status":
-		p.writeControlNoScroll("=== win display settings ===")
-		p.writeControlNoScroll(fmt.Sprintf("thinking: %v (show AI thinking)", p.getShowThinking()))
-		p.writeControlNoScroll(fmt.Sprintf("tools: %v (show full tool output, tool calls always shown)", p.getShowTools()))
-		p.writeControlNoScroll(fmt.Sprintf("prefix: %v (show 'assistant:', 'thinking:', 'tool:xxx:' labels)", p.getShowPrefixes()))
-		p.writeControlNoScroll("=============================")
+		p.showStatus()
 		return true, nil
 	case "quit":
 		p.writeControlNoScroll("win: exiting...")
 		return true, fmt.Errorf("quit requested")
+	case "models":
+		return true, p.showAvailableModels()
+	case "model":
+		if len(fields) == 2 {
+			// :win model without args - show usage
+			p.writeControlNoScroll("Usage: :win model <id|number> to set model")
+			return true, nil
+		}
+		return true, p.setModelFromInput(fields[2])
+	case "model-select":
+		// input is the selected text from visual mode
+		return true, p.handleModelSelectInput(input)
 	default:
 		p.writeControlNoScroll("win: unknown command")
 		return true, nil
@@ -426,17 +468,60 @@ func (p *PiInterpreter) handleLine(line string) {
 }
 
 func (p *PiInterpreter) handleResponse(line string) {
+	// Parse the basic response first
 	var resp rpcResponse
 	if err := json.Unmarshal([]byte(line), &resp); err != nil {
 		return
 	}
+
 	if !resp.Success {
 		msg := fmt.Sprintf("pi: %s failed", resp.Command)
 		if resp.Error != "" {
 			msg = fmt.Sprintf("pi: %s failed: %s", resp.Command, resp.Error)
 		}
 		p.writeControl(msg)
+		return
 	}
+
+	// Handle successful responses based on command type
+	switch resp.Command {
+	case "get_available_models":
+		p.handleAvailableModelsResponse(line)
+	case "set_model":
+		p.handleSetModelResponse(line)
+	}
+}
+
+func (p *PiInterpreter) handleAvailableModelsResponse(line string) {
+	var resp rpcModelResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		p.writeControl(fmt.Sprintf("error parsing models response: %v", err))
+		return
+	}
+
+	if len(resp.Data.Models) == 0 {
+		p.writeControl("no models available")
+		return
+	}
+
+	p.updateAvailableModels(resp.Data.Models)
+}
+
+func (p *PiInterpreter) handleSetModelResponse(line string) {
+	var resp rpcSetModelResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		p.writeControl(fmt.Sprintf("error parsing set_model response: %v", err))
+		return
+	}
+
+	p.stateMu.Lock()
+	p.currentModelID = resp.Data.ID
+	p.currentModelProvider = resp.Data.Provider
+	modelName := resp.Data.Name
+	p.stateMu.Unlock()
+
+	modelRef := formatModelRef(resp.Data.Provider, resp.Data.ID)
+	p.writeControlNoScroll(fmt.Sprintf("Model changed to: %s (%s)", modelRef, modelName))
 }
 
 func (p *PiInterpreter) handleMessageStart(line string) {
@@ -798,4 +883,249 @@ func (p *PiInterpreter) getShowPrefixes() bool {
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
 	return p.showPrefixes
+}
+
+// Model management functions
+
+func (p *PiInterpreter) showStatus() {
+	p.writeControlNoScroll("=== win display settings ===")
+	p.writeControlNoScroll(fmt.Sprintf("thinking: %v (show AI thinking)", p.getShowThinking()))
+	p.writeControlNoScroll(fmt.Sprintf("tools: %v (show full tool output, tool calls always shown)", p.getShowTools()))
+	p.writeControlNoScroll(fmt.Sprintf("prefix: %v (show 'assistant:', 'thinking:', 'tool:xxx:' labels)", p.getShowPrefixes()))
+
+	p.stateMu.Lock()
+	if p.currentModelID != "" || p.currentModelProvider != "" {
+		p.writeControlNoScroll(fmt.Sprintf("model: %s", formatModelRef(p.currentModelProvider, p.currentModelID)))
+	} else {
+		p.writeControlNoScroll("model: (not set)")
+	}
+	p.stateMu.Unlock()
+
+	p.writeControlNoScroll("=============================")
+}
+
+func (p *PiInterpreter) showAvailableModels() error {
+	// Send get_available_models command
+	cmd := map[string]interface{}{
+		"type": "get_available_models",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal get_available_models: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) setModel(provider, modelID string) error {
+	if provider == "" || modelID == "" {
+		return fmt.Errorf("model must include provider and id (e.g. provider/model-id)")
+	}
+	cmd := map[string]interface{}{
+		"type":     "set_model",
+		"provider": provider,
+		"modelId":  modelID,
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal set_model: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) setModelFromInput(input string) error {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return fmt.Errorf("model not specified")
+	}
+
+	// Strip numeric prefix "N: ..." if present
+	if idx := strings.Index(input, ":"); idx > 0 {
+		prefix := strings.TrimSpace(input[:idx])
+		if _, err := parseInt(prefix); err == nil {
+			input = strings.TrimSpace(input[idx+1:])
+		}
+	}
+
+	// If input includes extra fields (e.g. "provider/id - Name"), take the first token
+	fields := strings.Fields(input)
+	if len(fields) == 0 {
+		return fmt.Errorf("model not specified")
+	}
+	token := fields[0]
+
+	// Try to parse as number (index into available models)
+	p.stateMu.Lock()
+	availableModels := make([]Model, len(p.availableModels))
+	copy(availableModels, p.availableModels)
+	p.stateMu.Unlock()
+
+	var provider string
+	var modelID string
+
+	// Try to parse as number
+	if num, err := parseInt(token); err == nil {
+		if num >= 0 && num < len(availableModels) {
+			modelID = availableModels[num].ID
+			provider = availableModels[num].Provider
+		}
+	}
+
+	// Try to parse provider/modelId or provider:modelId
+	if modelID == "" {
+		if p, id, ok := splitModelRef(token); ok {
+			provider = p
+			modelID = id
+		}
+	}
+
+	// Try to match by model ID (or prefix) using cached list
+	if modelID == "" {
+		match, err := matchModelByID(token, availableModels)
+		if err != nil {
+			return err
+		}
+		if match.ID != "" {
+			modelID = match.ID
+			provider = match.Provider
+		}
+	}
+
+	if modelID == "" || provider == "" {
+		if len(availableModels) == 0 {
+			return fmt.Errorf("model not found: %s (run :win models or use provider/model-id)", input)
+		}
+		return fmt.Errorf("model not found: %s (use :win models to list available models)", input)
+	}
+
+	return p.setModel(provider, modelID)
+}
+
+func (p *PiInterpreter) handleModelSelectInput(input string) error {
+	// Input is from send-to-win after visual selection
+	// Format could be:
+	// - "N: provider/model-id  - Model Name [current]" (full line)
+	// - "provider/model-id" (just the ID)
+	// - "N" (just the number)
+
+	input = strings.TrimSpace(input)
+	const prefix = ":win model-select"
+	if strings.HasPrefix(input, prefix) {
+		input = strings.TrimSpace(strings.TrimPrefix(input, prefix))
+	}
+
+	return p.setModelFromInput(input)
+}
+
+func parseInt(s string) (int, error) {
+	var result int
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("not a number")
+		}
+		result = result*10 + int(ch-'0')
+	}
+	return result, nil
+}
+
+func splitModelRef(s string) (string, string, bool) {
+	if s == "" {
+		return "", "", false
+	}
+	if strings.Contains(s, "/") {
+		parts := strings.SplitN(s, "/", 2)
+		if parts[0] != "" && parts[1] != "" {
+			return parts[0], parts[1], true
+		}
+	}
+	if strings.Contains(s, ":") {
+		parts := strings.SplitN(s, ":", 2)
+		if parts[0] != "" && parts[1] != "" {
+			return parts[0], parts[1], true
+		}
+	}
+	return "", "", false
+}
+
+func matchModelByID(input string, models []Model) (Model, error) {
+	var matches []Model
+	for _, m := range models {
+		if m.ID == input || strings.HasPrefix(m.ID, input) {
+			matches = append(matches, m)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return Model{}, fmt.Errorf("model id is ambiguous: %s (use provider/model-id)", input)
+	}
+	return Model{}, nil
+}
+
+func formatModelRef(provider, id string) string {
+	if provider == "" {
+		return id
+	}
+	if id == "" {
+		return provider
+	}
+	return provider + "/" + id
+}
+
+func (p *PiInterpreter) updateAvailableModels(models []Model) {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	p.availableModels = models
+
+	// Render model list
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("Available Models\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+
+	for i, m := range models {
+		currentMarker := ""
+		if p.currentModelID == m.ID && p.currentModelProvider == m.Provider {
+			currentMarker = " [current]"
+		}
+		modelRef := formatModelRef(m.Provider, m.ID)
+		sb.WriteString(fmt.Sprintf("%d: %-32s - %s%s\n", i, modelRef, m.Name, currentMarker))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+	sb.WriteString("Usage:\n")
+	sb.WriteString("  - Visual select a model line above\n")
+	sb.WriteString("  - Press: <space> p m to set selected model\n")
+	sb.WriteString("  - Or type: :win model <number|provider/model-id>\n\n")
+
+	p.writeControlNoScroll(sb.String())
 }

@@ -54,11 +54,16 @@ Example:
 - Runs `pi --mode rpc` and streams events to the buffer.
 - Execution is **send-to-win only**. Keyboard input is just text (no command execution).
 - Tool output streams live into `+pi` with prefixes.
+
 Controls (handled locally by win):
 - `:win thinking on|off|toggle`
 - `:win tools on|off|toggle`
 - `:win prefix on|off|toggle`
 - `:win status`
+- `:win quit`
+- `:win models` - Show available models (pi only)
+- `:win model <number|provider/model-id>` - Set model (pi only)
+- `:win model-select` - Set model from visual selection (pi only)
 
 **shell**
 - Uses a persistent `zsh -i` subprocess.
@@ -85,7 +90,61 @@ win-ctl +pi thinking toggle
 win-ctl +pi tools off
 win-ctl +pi prefix toggle
 win-ctl +pi status
+win-ctl +pi quit
 ```
+
+## Pi Model Selection
+
+The pi interpreter provides convenient model selection using ad's minibuffer:
+
+```bash
+# Interactive model selection with minibuffer
+win-model-select
+
+# Or bind to a key (recommended):
+# ~/.ad/config.toml:
+[keys.normal]
+"<space> p m" = { run = "win-model-select" }
+```
+
+This will pop up a minibuffer dialog listing all available models. Select one and press Enter.
+
+### Alternative Methods
+
+```bash
+# Show available models in +pi buffer
+win-ctl +pi models
+
+# Set model by ID directly
+send-to-win +pi ";; :win model anthropic/claude-sonnet-4-20250514"
+
+# Set model by number (after showing list)
+send-to-win +pi ";; :win model 0"
+
+# Show current status
+win-ctl +pi status
+```
+
+Example keybindings for model management:
+
+```toml
+[keys.normal]
+# Model selection (minibuffer)
+"<space> p m" = { run = "win-model-select" }
+
+# Alternative methods
+"<space> p l" = { run = "send-to-win", args = ["+pi", ";; :win models"] }
+"<space> p s" = { run = "win-ctl", args = ["+pi", "status"] }
+```
+
+### How It Works
+
+1. `win-model-select` calls `pi-get-models` (a Go RPC client)
+2. `pi-get-models` connects to pi in RPC mode and fetches the model list
+3. The model list is piped to `minibufferSelect` (from `ad.sh`)
+4. User selects a model from the minibuffer dialog
+5. The selected model ID is sent to win via `send-to-win`
+6. win sends the `set_model` RPC command to pi
 
 ## Pi API Key (no env var)
 
@@ -174,9 +233,9 @@ Add bindings in `~/.ad/config.toml`:
 
 ```toml
 [keys.normal]
-"<space> s p" = { run = "send-to-win +pi" }
-"<space> s w" = { run = "send-to-win +win" }
-"<space> t p" = { run = "win-ctl +pi thinking toggle" }
+"<space> s p" = { run = "send-to-win", args = ["+pi"] }
+"<space> s w" = { run = "send-to-win", args = ["+win"] }
+"<space> t p" = { run = "win-ctl", args = ["+pi", "thinking toggle"] }
 ```
 
 ## License
