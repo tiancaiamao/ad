@@ -1027,7 +1027,8 @@ impl Layout {
                 }
 
                 let b = self.buffers.with_id_mut(win.view.bufid).unwrap();
-                let y_max = b.txt.len_lines() - 1;
+                let len_lines = b.txt.len_lines();
+                let y_max = if len_lines > 0 { len_lines - 1 } else { 0 };
                 win.view.row_off = min(win.view.row_off, y_max);
             }
         }

@@ -1500,7 +1500,7 @@ pub(crate) mod tests {
     fn display_name_multibyte_at_exact_boundary() {
         // Test with multibyte characters in filename
         // "测试" (test in Chinese) = 6 bytes total
-        let path = format!("/home/user/测试文件.md");
+        let path = "/home/user/测试文件.md".to_string();
         // /home/user/ = 11 bytes, 测试 = 6 bytes, 文件.md = 8 bytes
         // Total = 25 bytes (well under MAX_NAME_LEN)
 

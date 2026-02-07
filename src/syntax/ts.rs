@@ -168,8 +168,16 @@ impl TsState {
     }
 
     pub fn update(&mut self, gb: &GapBuffer, from_row: usize, n_rows: usize) {
+        // Clamp from_row to valid range to prevent index out of bounds errors
+        let len_lines = gb.len_lines();
+        let from_row = if len_lines > 0 {
+            min(from_row, len_lines - 1)
+        } else {
+            0
+        };
+
         let raw_from = gb.line_to_byte(from_row);
-        let raw_to = if from_row + n_rows + 1 < gb.len_lines() {
+        let raw_to = if from_row + n_rows + 1 < len_lines {
             gb.line_to_byte(from_row + n_rows + 1)
         } else {
             gb.len()
