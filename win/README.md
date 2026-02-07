@@ -23,7 +23,7 @@ go build -o ~/.ad/bin/win
 **Pi (RPC)**
 1. `!win --interp pi`
 2. Select text in any buffer and run `send-to-win +pi`
-3. Control output with `win-ctl +pi thinking|tools|prefix toggle`
+3. More control commands see `pi-ctl /help`
 
 **Cora (Lisp)**
 1. Make sure `/Users/genius/project/cora/cora` exists (see `win/cora.go`)
@@ -55,23 +55,47 @@ Example:
 - Execution is **send-to-win only**. Keyboard input is just text (no command execution).
 - Tool output streams live into `+pi` with prefixes.
 
-Controls (handled locally by win):
-- `:win thinking on|off|toggle` - Show/hide AI thinking
-- `:win tools on|off|toggle` - Show/hide full tool output
-- `:win prefix on|off|toggle` - Show/hide label prefixes
-- `:win show-settings` - Show win display settings (local config)
-- `:win session-state` - Show pi session state (from pi)
-- `:win messages` - Show all messages history (pi only)
-- `:win show-usage` - Show session usage statistics (pi only)
-- `:win models` - Show available models (pi only)
-- `:win model <number|provider/model-id>` - Set model (pi only)
-- `:win model-select` - Set model from visual selection (pi only)
-- `:win new-session` - Start a new pi session
-- `:win abort` - Abort current pi operation
-- `:win auto-compaction <on|off>` - Enable/disable auto-compaction (pi only)
-- `:win thinking-level <off|minimal|low|medium|high|xhigh>` - Set thinking level (pi only)
-- `:win help` - Show all commands and usage
-- `:win quit` - Exit win
+**Commands (preferred `/command` syntax):**
+
+Information Commands:
+- `/session` - Show pi session state (from pi)
+- `/session-state` - Show pi session state (alias for `/session`, deprecated)
+- `/messages` - Show all messages history (pi only)
+- `/show-usage` - Show session usage statistics (pi only)
+
+Display Settings (win-specific):
+- `/show-settings` - Show win display settings (local config)
+- `/thinking [on|off|toggle]` - Show/hide AI thinking
+- `/tools [on|off|toggle]` - Show/hide full tool output
+- `/prefix [on|off|toggle]` - Show/hide label prefixes
+
+Model Management:
+- `/model-select` - Launch interactive model selection (calls `pi-model-select`)
+- `/models` - Show available models (deprecated, use `/model-select`)
+- `/model <number|provider/model-id>` - Set model (deprecated, use `/model-select`)
+
+Session Management:
+- `/new` - Start a new pi session
+- `/resume [session-path]` - Resume from previous session
+  - Without args: launches interactive session selection (calls `pi-session-select`)
+  - With path: switches to specified session (e.g., `/resume ~/.pi/agent/sessions/--...--/session.jsonl`)
+
+Context Control:
+- `/compact [instructions]` - Manually compact context with optional custom instructions
+
+Settings (pi only):
+- `/auto-compaction <on|off>` - Enable/disable auto-compaction
+- `/thinking-level <off|minimal|low|medium|high|xhigh>` - Set thinking level
+- `/cycle-thinking-level` - Cycle through available thinking levels
+
+Utilities:
+- `/copy` - Copy last assistant message to clipboard
+- `/abort` - Abort current pi operation
+- `/quit` - Exit win
+- `/help` - Show all commands and usage
+
+**Backward Compatibility:**
+- Commands also work with `:win command` syntax (e.g., `:win session`, `:win new`), but `/command` is preferred.
 
 **Debugging**:
 - Run `win --debug` to enable detailed logging to `/tmp/win-repl.log`
@@ -96,12 +120,12 @@ The script injects `;; <text>` into the target buffer, and win executes it when 
 
 ## win-ctl
 
-`win-ctl` is a helper for local control commands (pi only). It sends `:win ...` via `send-to-win`.
+`win-ctl` is a helper for local control commands (pi only). It sends commands via `send-to-win`.
 
 ```bash
 win-ctl +pi help             # Show all commands
 win-ctl +pi show-settings    # Show win display settings
-win-ctl +pi session-state    # Show pi session state
+win-ctl +pi session          # Show pi session state
 win-ctl +pi messages         # Show message history
 win-ctl +pi show-usage       # Show session usage statistics
 win-ctl +pi thinking toggle
@@ -109,6 +133,8 @@ win-ctl +pi tools off
 win-ctl +pi prefix toggle
 win-ctl +pi quit
 ```
+
+**Note:** `win-ctl` accepts both `/command` and `:win command` syntax internally.
 
 ## Pi Model Selection
 
@@ -129,39 +155,59 @@ This will pop up a minibuffer dialog listing all available models. Select one an
 ### Alternative Methods
 
 ```bash
-# Show available models in +pi buffer
-win-ctl +pi models
-
 # Set model by ID directly
-send-to-win +pi ";; :win model anthropic/claude-sonnet-4-20250514"
+send-to-win +pi ";; /model anthropic/claude-sonnet-4-20250514"
 
-# Set model by number (after showing list)
+# Set model by number (deprecated - requires listing first)
+send-to-win +pi ";; :win models"
 send-to-win +pi ";; :win model 0"
-
-# Show current status
-win-ctl +pi status
 ```
 
-Example keybindings for model management:
-
-```toml
-[keys.normal]
-# Model selection (minibuffer)
-"<space> p m" = { run = "win-model-select" }
-
-# Alternative methods
-"<space> p l" = { run = "send-to-win", args = ["+pi", ";; :win models"] }
-"<space> p s" = { run = "win-ctl", args = ["+pi", "status"] }
-```
+**Note:** `/model` command is deprecated. Use `pi-model-select` for interactive selection.
 
 ### How It Works
 
-1. `win-model-select` calls `pi-get-models` (a Go RPC client)
+1. `pi-model-select` calls `pi-get-models` (a Python RPC client)
 2. `pi-get-models` connects to pi in RPC mode and fetches the model list
 3. The model list is piped to `minibufferSelect` (from `ad.sh`)
 4. User selects a model from the minibuffer dialog
 5. The selected model ID is sent to win via `send-to-win`
 6. win sends the `set_model` RPC command to pi
+
+## Pi Session Selection
+
+The pi interpreter provides convenient session selection using ad's minibuffer:
+
+```bash
+# Interactive session selection with minibuffer
+pi-session-select
+```
+
+This will list all available sessions with timestamps, sizes, and modification times. Select one to resume.
+
+### Alternative Methods
+
+```bash
+# Direct path
+send-to-win +pi ";; /resume ~/.pi/agent/sessions/--...--/session.jsonl"
+
+# Show usage
+send-to-win +pi ";; /resume"
+```
+
+Example keybindings for session management:
+
+```toml
+[keys.normal]
+# Session selection (minibuffer)
+"<space> p r" = { run = "pi-session-select" }
+
+# Show current session state
+"<space> p s" = { run = "win-ctl", args = ["+pi", "session"] }
+
+# Show usage statistics
+"<space> p u" = { run = "win-ctl", args = ["+pi", "show-usage"] }
+```
 
 ## Pi API Key (no env var)
 
@@ -250,9 +296,30 @@ Add bindings in `~/.ad/config.toml`:
 
 ```toml
 [keys.normal]
+# Send to buffers
 "<space> s p" = { run = "send-to-win", args = ["+pi"] }
 "<space> s w" = { run = "send-to-win", args = ["+win"] }
+
+# Display toggles
 "<space> t p" = { run = "win-ctl", args = ["+pi", "thinking toggle"] }
+"<space> t o" = { run = "win-ctl", args = ["+pi", "tools toggle"] }
+"<space> t l" = { run = "win-ctl", args = ["+pi", "prefix toggle"] }
+
+# Model management
+"<space> p m" = { run = "win-model-select" }
+
+# Session management
+"<space> p r" = { run = "pi-session-select" }
+"<space> p n" = { run = "win-ctl", args = ["+pi", "new"] }
+"<space> p s" = { run = "win-ctl", args = ["+pi", "session"] }
+
+# Context control
+"<space> p c" = { run = "win-ctl", args = ["+pi", "compact"] }
+"<space> p C" = { run = "win-ctl", args = ["+pi", "copy"] }
+
+# Utilities
+"<space> p a" = { run = "win-ctl", args = ["+pi", "abort"] }
+"<space> p h" = { run = "win-ctl", args = ["+pi", "help"] }
 ```
 
 ## License

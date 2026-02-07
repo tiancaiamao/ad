@@ -460,7 +460,8 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 						log.Printf("[HANDLE-INSERT] HandleControl returned: handled=%v err=%v", handled, err)
 					}
 					if err != nil {
-						return ad.Handled, err
+						// Control command errors should be displayed, not cause REPL to exit
+						_ = e.handler.WriteOutput(fmt.Sprintf("%s\n", err.Error()))
 					}
 					if handled {
 						if err := e.handler.deleteLastSendToWinInsert(); err != nil && e.handler.config.Debug {
@@ -488,14 +489,15 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 				if e.handler.config.Debug {
 					log.Printf("[HANDLE-INSERT] ExecuteCommand returned: err=%v", err)
 				}
-				return ad.Handled, err
+				// Don't let command errors cause REPL to exit - just log them
+				if err != nil {
+					_ = e.handler.WriteOutput(fmt.Sprintf("%s\n", err.Error()))
+				}
+				return ad.Handled, nil
 			}
 		}
 
 		if err := e.handler.client.WriteAddr(e.handler.bufferID, "$"); err != nil {
-			if e.handler.config.Debug {
-				log.Printf("[HANDLE-INSERT] WriteAddr error: %v", err)
-			}
 			return ad.Handled, err
 		}
 		if e.handler.config.Debug {
@@ -545,7 +547,11 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 			if e.handler.config.Debug {
 				log.Printf("[HANDLE-INSERT] ExecuteCommand returned: err=%v", err)
 			}
-			return ad.Handled, err
+			// Don't let command errors cause REPL to exit - just log them
+			if err != nil {
+				_ = e.handler.WriteOutput(fmt.Sprintf("%s\n", err.Error()))
+			}
+			return ad.Handled, nil
 		}
 
 		if err := e.handler.client.WriteAddr(e.handler.bufferID, "$"); err != nil {
@@ -594,7 +600,12 @@ func (e *replEventHandler) HandleExecute(source ad.EventSource, from, to int, tx
 		return ad.Handled, fmt.Errorf("append-to-body: %w", err)
 	}
 
-	return ad.Handled, e.handler.ExecuteCommand(input, true)
+	// ExecuteCommand error should not cause REPL to exit
+	err := e.handler.ExecuteCommand(input, true)
+	if err != nil {
+		_ = e.handler.WriteOutput(fmt.Sprintf("%s\n", err.Error()))
+	}
+	return ad.Handled, nil
 }
 
 // Run is a convenience method that starts the handler and runs the event loop.

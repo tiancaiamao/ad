@@ -138,11 +138,62 @@ type rpcNewSessionResponse struct {
 	} `json:"data"`
 }
 
+type rpcSwitchSessionResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Cancelled bool `json:"cancelled"`
+	} `json:"data"`
+}
+
+type rpcGetLastAssistantTextResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Text string `json:"text"`
+	} `json:"data"`
+}
+
+type rpcCycleThinkingLevelResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Level string `json:"level"`
+	} `json:"data"`
+}
+
 type rpcSetThinkingLevelResponse struct {
 	Type    string `json:"type"`
 	Command string `json:"command"`
 	Success bool   `json:"success"`
 	Error   string `json:"error"`
+	Data    struct {
+		Level string `json:"level"`
+	} `json:"data"`
+}
+
+type rpcSlashCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Source      string `json:"source"` // "extension", "prompt", "skill"
+	Location    string `json:"location,omitempty"` // "user", "project", "path"
+	Path        string `json:"path,omitempty"`
+}
+
+type rpcGetCommandsResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Commands []rpcSlashCommand `json:"commands"`
+	} `json:"data"`
 }
 
 type rpcGetMessagesResponse struct {
@@ -454,6 +505,8 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 		return true, p.getMessages()
 	case "show-usage":
 		return true, p.showUsage()
+	case "commands":
+		return true, p.getCommands()
 	case "models": // deprecated, show warning
 		p.writeControlNoScroll("win: /models is deprecated, use /model-select instead")
 		return true, p.showAvailableModels()
@@ -465,8 +518,8 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 		p.writeControlNoScroll("win: /model is deprecated, use /model-select instead")
 		return true, p.setModelFromInput(args[0])
 	case "model-select":
-		// input is the selected text from visual mode
-		return true, p.handleModelSelectInput(input)
+		// Trigger external script for interactive model selection
+		return true, p.triggerModelSelect()
 	case "new", "new-session": // both /new and :win new-session
 		return true, p.newSession()
 	case "abort":
@@ -483,6 +536,8 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 			return true, nil
 		}
 		return true, p.setThinkingLevel(args[0])
+	case "cycle-thinking-level":
+		return true, p.cycleThinkingLevel()
 	case "thinking", "tools", "prefix":
 		if err := p.toggleSetting(cmd, args); err != nil {
 			p.writeControlNoScroll(err.Error())
@@ -492,7 +547,10 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 		customInstructions := strings.Join(args, " ")
 		return true, p.compact(customInstructions)
 	case "resume":
-		return true, p.triggerSessionResume()
+		sessionPath := strings.Join(args, " ")
+		return true, p.triggerSessionResume(sessionPath)
+	case "copy":
+		return true, p.copyLastAssistantText()
 	case "quit":
 		p.writeControlNoScroll("win: exiting...")
 		return true, fmt.Errorf("quit requested")
@@ -731,14 +789,22 @@ func (p *PiInterpreter) handleResponse(line string) {
 		p.handleAvailableModelsResponse(line)
 	case "set_model":
 		p.handleSetModelResponse(line)
+	case "get_commands":
+		p.handleGetCommandsResponse(line)
 	case "abort":
 		p.handleAbortResponse(line)
 	case "new_session":
 		p.handleNewSessionResponse(line)
+	case "switch_session":
+		p.handleSwitchSessionResponse(line)
+	case "get_last_assistant_text":
+		p.handleGetLastAssistantTextResponse(line)
 	case "get_state":
 		p.handleGetStateResponse(line)
 	case "set_thinking_level":
 		p.handleSetThinkingLevelResponse(line)
+	case "cycle_thinking_level":
+		p.handleCycleThinkingLevelResponse(line)
 	case "get_messages":
 		p.handleGetMessagesResponse(line)
 	case "get_session_stats":
@@ -1157,7 +1223,8 @@ func (p *PiInterpreter) showHelp() {
 	sb.WriteString("Information Commands:\n")
 	sb.WriteString("  /session            - Show pi session state\n")
 	sb.WriteString("  /messages            - Show all messages history\n")
-	sb.WriteString("  /show-usage          - Show session statistics\n\n")
+	sb.WriteString("  /show-usage          - Show session statistics\n")
+	sb.WriteString("  /commands            - Show available commands (skills, prompts, extensions)\n\n")
 
 	sb.WriteString("Display Settings (win-specific):\n")
 	sb.WriteString("  /show-settings       - Show win display settings\n")
@@ -1173,12 +1240,14 @@ func (p *PiInterpreter) showHelp() {
 	sb.WriteString("  /resume              - Resume from previous session\n\n")
 
 	sb.WriteString("Context Control:\n")
-	sb.WriteString("  /compact [instructions] - Manually compact context\n\n")
+	sb.WriteString("  /compact [instructions] - Manually compact context\n")
+	sb.WriteString("  /copy                - Copy last assistant message to clipboard\n\n")
 
 	sb.WriteString("Settings:\n")
 	sb.WriteString("  /auto-compaction <on|off> - Enable/disable auto-compaction\n")
 	sb.WriteString("  /thinking-level <off|minimal|low|medium|high|xhigh>\n")
-	sb.WriteString("                       - Set pi thinking level\n\n")
+	sb.WriteString("                       - Set pi thinking level\n")
+	sb.WriteString("  /cycle-thinking-level  - Cycle through available thinking levels\n\n")
 
 	sb.WriteString("Win Control:\n")
 	sb.WriteString("  /abort               - Abort current operation\n")
@@ -1191,6 +1260,36 @@ func (p *PiInterpreter) showHelp() {
 }
 
 // Model management functions
+
+func (p *PiInterpreter) triggerModelSelect() error {
+	// Execute the external pi-model-select script
+	home := os.Getenv("HOME")
+	scriptPath := filepath.Join(home, ".ad", "bin", "pi-model-select")
+
+	// Check if script exists
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		p.writeControlNoScroll("win: pi-model-select script not found")
+		p.writeControlNoScroll(fmt.Sprintf("Expected at: %s", scriptPath))
+		p.writeControlNoScroll("")
+		p.writeControlNoScroll("You can still use the external command directly:")
+		p.writeControlNoScroll("  pi-model-select")
+		return fmt.Errorf("pi-model-select script not found")
+	}
+
+	// Run the script
+	cmd := exec.Command(scriptPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	p.writeControlNoScroll("win: launching model selection...")
+	if err := cmd.Run(); err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: model selection failed: %v", err))
+		return fmt.Errorf("run pi-model-select: %w", err)
+	}
+
+	return nil
+}
 
 func (p *PiInterpreter) showSettings() {
 	p.writeControlNoScroll("=== win display settings ===")
@@ -1292,24 +1391,163 @@ func (p *PiInterpreter) handleCompactResponse(line string) error {
 	return nil
 }
 
-func (p *PiInterpreter) triggerSessionResume() error {
-	// This will interact with ad's minibuffer mechanism
-	// List sessions and allow selection
+func (p *PiInterpreter) getSessionCWD(sessionPath string) (string, error) {
+	// Read first line of session file to get cwd
+	file, err := os.Open(sessionPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
 
-	// TODO: Implement proper minibuffer integration
-	p.writeControlNoScroll("win: /resume - session selection (minibuffer integration needed)")
-
-	// For now, list available sessions
-	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions")
-	if entries, err := os.ReadDir(sessionDir); err == nil {
-		p.writeControlNoScroll(fmt.Sprintf("Found %d session directories", len(entries)))
-		for _, entry := range entries {
-			if entry.IsDir() {
-				p.writeControlNoScroll(fmt.Sprintf("  - %s", entry.Name()))
+	scanner := bufio.NewScanner(file)
+	if scanner.Scan() {
+		line := scanner.Text()
+		var sessionEntry struct {
+			Type string `json:"type"`
+			CWD  string `json:"cwd"`
+		}
+		if err := json.Unmarshal([]byte(line), &sessionEntry); err == nil {
+			if sessionEntry.Type == "session" && sessionEntry.CWD != "" {
+				return sessionEntry.CWD, nil
 			}
 		}
 	}
+	return "", nil
+}
 
+func (p *PiInterpreter) triggerSessionResume(sessionPath string) error {
+	if sessionPath == "" {
+		// No path provided, execute the external pi-session-select script
+		home := os.Getenv("HOME")
+		scriptPath := filepath.Join(home, ".ad", "bin", "pi-session-select")
+
+		// Check if script exists
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			p.writeControlNoScroll("win: pi-session-select script not found")
+			p.writeControlNoScroll(fmt.Sprintf("Expected at: %s", scriptPath))
+			p.writeControlNoScroll("")
+			p.writeControlNoScroll("You can still use the external command directly:")
+			p.writeControlNoScroll("  pi-session-select")
+			p.writeControlNoScroll("")
+			p.writeControlNoScroll("Or provide a session path directly:")
+			p.writeControlNoScroll("  /resume ~/.pi/agent/sessions/--...--/session.jsonl")
+			return fmt.Errorf("pi-session-select script not found")
+		}
+
+		// Run the script
+		cmd := exec.Command(scriptPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		p.writeControlNoScroll("win: launching session selection...")
+		if err := cmd.Run(); err != nil {
+			p.writeControlNoScroll(fmt.Sprintf("win: session selection failed: %v", err))
+			return fmt.Errorf("run pi-session-select: %w", err)
+		}
+
+		return nil
+	}
+
+	// Validate the session path
+	if !filepath.IsAbs(sessionPath) {
+		home := os.Getenv("HOME")
+		if strings.HasPrefix(sessionPath, "~/") {
+			sessionPath = filepath.Join(home, sessionPath[2:])
+		}
+	}
+
+	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
+		p.writeControlNoScroll(fmt.Sprintf("win: session file not found: %s", sessionPath))
+		return nil
+	}
+
+	// Check session CWD vs current working directory
+	sessionCWD, err := p.getSessionCWD(sessionPath)
+	if err == nil && sessionCWD != "" {
+		p.stateMu.Lock()
+		currentCWD := p.workingDir
+		p.stateMu.Unlock()
+
+		// Normalize paths for comparison
+		absSessionCWD, _ := filepath.Abs(sessionCWD)
+		absCurrentCWD, _ := filepath.Abs(currentCWD)
+
+		if absSessionCWD != absCurrentCWD {
+			p.writeControlNoScroll("═════════════════════════════════════")
+			p.writeControlNoScroll("⚠️  Working Directory Mismatch")
+			p.writeControlNoScroll("═════════════════════════════════════")
+			p.writeControlNoScroll("")
+			p.writeControlNoScroll(fmt.Sprintf("Session CWD:    %s", sessionCWD))
+			p.writeControlNoScroll(fmt.Sprintf("Current CWD:   %s", currentCWD))
+			p.writeControlNoScroll("")
+			p.writeControlNoScroll("This session was created in a different directory.")
+			p.writeControlNoScroll("Relative paths and file operations may not work correctly.")
+			p.writeControlNoScroll("")
+			p.writeControlNoScroll("To switch to this project, consider:")
+			p.writeControlNoScroll("  1. Navigate to the project directory")
+			p.writeControlNoScroll("  2. Start a new pi session with /new")
+			p.writeControlNoScroll("  3. Use /resume to load the correct session")
+			p.writeControlNoScroll("")
+			p.writeControlNoScroll("Continuing anyway...")
+			p.writeControlNoScroll("═════════════════════════════════════")
+			p.writeControlNoScroll("")
+		}
+	}
+
+	// Send switch_session RPC command
+	cmd := map[string]interface{}{
+		"type":        "switch_session",
+		"sessionPath": sessionPath,
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal switch_session: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: failed to switch session: %v", err))
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	p.writeControlNoScroll(fmt.Sprintf("win: switching to session: %s", filepath.Base(sessionPath)))
+	return nil
+}
+
+func (p *PiInterpreter) copyLastAssistantText() error {
+	// Send get_last_assistant_text command
+	cmd := map[string]interface{}{
+		"type": "get_last_assistant_text",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal get_last_assistant_text: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: failed to get last assistant text: %v", err))
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	p.writeControlNoScroll("win: fetching last assistant message...")
 	return nil
 }
 
@@ -1429,28 +1667,12 @@ func (p *PiInterpreter) setModelFromInput(input string) error {
 
 	if modelID == "" || provider == "" {
 		if len(availableModels) == 0 {
-			return fmt.Errorf("model not found: %s (run :win models or use provider/model-id)", input)
+			return fmt.Errorf("model not found: %s (run /models to list available, then use /model-select or provider/model-id)", input)
 		}
-		return fmt.Errorf("model not found: %s (use :win models to list available models)", input)
+		return fmt.Errorf("model not found: %s (use /model-select or provider/model-id)", input)
 	}
 
 	return p.setModel(provider, modelID)
-}
-
-func (p *PiInterpreter) handleModelSelectInput(input string) error {
-	// Input is from send-to-win after visual selection
-	// Format could be:
-	// - "N: provider/model-id  - Model Name [current]" (full line)
-	// - "provider/model-id" (just the ID)
-	// - "N" (just the number)
-
-	input = strings.TrimSpace(input)
-	const prefix = ":win model-select"
-	if strings.HasPrefix(input, prefix) {
-		input = strings.TrimSpace(strings.TrimPrefix(input, prefix))
-	}
-
-	return p.setModelFromInput(input)
 }
 
 func parseInt(s string) (int, error) {
@@ -1534,7 +1756,7 @@ func (p *PiInterpreter) updateAvailableModels(models []Model) {
 	sb.WriteString("Usage:\n")
 	sb.WriteString("  - Visual select a model line above\n")
 	sb.WriteString("  - Press: <space> p m to set selected model\n")
-	sb.WriteString("  - Or type: :win model <number|provider/model-id>\n\n")
+	sb.WriteString("  - Or type: /model <number|provider/model-id>\n\n")
 
 	p.writeControlNoScroll(sb.String())
 }
@@ -1582,6 +1804,120 @@ func (p *PiInterpreter) handleAbortResponse(line string) {
 	}
 
 	p.writeControl("pi: operation aborted")
+}
+
+// Commands command implementation
+
+func (p *PiInterpreter) getCommands() error {
+	cmd := map[string]interface{}{
+		"type": "get_commands",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal get_commands: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleGetCommandsResponse(line string) {
+	var resp rpcGetCommandsResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		p.writeControl(fmt.Sprintf("error parsing commands response: %v", err))
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: get_commands failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: get_commands failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	if len(resp.Data.Commands) == 0 {
+		p.writeControl("no commands available")
+		return
+	}
+
+	// Group commands by source
+	extensions := make([]rpcSlashCommand, 0)
+	prompts := make([]rpcSlashCommand, 0)
+	skills := make([]rpcSlashCommand, 0)
+
+	for _, cmd := range resp.Data.Commands {
+		switch cmd.Source {
+		case "extension":
+			extensions = append(extensions, cmd)
+		case "prompt":
+			prompts = append(prompts, cmd)
+		case "skill":
+			skills = append(skills, cmd)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("Available Commands\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+
+	if len(skills) > 0 {
+		sb.WriteString("Skills (/skill:name):\n")
+		for _, cmd := range skills {
+			name := strings.TrimPrefix(cmd.Name, "skill:")
+			desc := cmd.Description
+			if desc != "" {
+				sb.WriteString(fmt.Sprintf("  /skill:%-30s - %s\n", name, desc))
+			} else {
+				sb.WriteString(fmt.Sprintf("  /skill:%s\n", name))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(prompts) > 0 {
+		sb.WriteString("Prompt Templates (/name):\n")
+		for _, cmd := range prompts {
+			desc := cmd.Description
+			if desc != "" {
+				sb.WriteString(fmt.Sprintf("  /%-33s - %s\n", cmd.Name, desc))
+			} else {
+				sb.WriteString(fmt.Sprintf("  /%s\n", cmd.Name))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(extensions) > 0 {
+		sb.WriteString("Extension Commands (/name):\n")
+		for _, cmd := range extensions {
+			desc := cmd.Description
+			if desc != "" {
+				sb.WriteString(fmt.Sprintf("  /%-33s - %s\n", cmd.Name, desc))
+			} else {
+				sb.WriteString(fmt.Sprintf("  /%s\n", cmd.Name))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("═════════════════════════════════════\n")
+
+	p.writeControlNoScroll(sb.String())
 }
 
 // New session command implementation
@@ -1632,6 +1968,134 @@ func (p *PiInterpreter) handleNewSessionResponse(line string) {
 	}
 
 	p.writeControl("pi: started new session")
+}
+
+func (p *PiInterpreter) handleSwitchSessionResponse(line string) {
+	var resp rpcSwitchSessionResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: switch_session failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: switch_session failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	if resp.Data.Cancelled {
+		p.writeControl("pi: session switch cancelled by extension")
+		return
+	}
+
+	p.writeControl("pi: session switched successfully")
+}
+
+func (p *PiInterpreter) handleGetLastAssistantTextResponse(line string) {
+	var resp rpcGetLastAssistantTextResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: get_last_assistant_text failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: get_last_assistant_text failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	if resp.Data.Text == "" {
+		p.writeControl("win: no assistant message found")
+		return
+	}
+
+	// Copy to system clipboard using pbcopy (macOS)
+	cmd := exec.Command("pbcopy")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		p.writeControl(fmt.Sprintf("win: failed to copy to clipboard: %v", err))
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		p.writeControl(fmt.Sprintf("win: failed to start pbcopy: %v", err))
+		return
+	}
+
+	if _, err := stdin.Write([]byte(resp.Data.Text)); err != nil {
+		p.writeControl(fmt.Sprintf("win: failed to write to clipboard: %v", err))
+		return
+	}
+
+	if err := stdin.Close(); err != nil {
+		p.writeControl(fmt.Sprintf("win: failed to close stdin: %v", err))
+		return
+	}
+
+	if err := cmd.Wait(); err != nil {
+		p.writeControl(fmt.Sprintf("win: pbcopy failed: %v", err))
+		return
+	}
+
+	// Calculate character count
+	charCount := len(resp.Data.Text)
+	lineCount := strings.Count(resp.Data.Text, "\n") + 1
+
+	p.writeControl(fmt.Sprintf("win: copied last assistant message to clipboard (%d characters, %d lines)", charCount, lineCount))
+}
+
+func (p *PiInterpreter) cycleThinkingLevel() error {
+	// Send cycle_thinking_level command
+	cmd := map[string]interface{}{
+		"type": "cycle_thinking_level",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal cycle_thinking_level: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: failed to cycle thinking level: %v", err))
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	p.writeControlNoScroll("win: cycling thinking level...")
+	return nil
+}
+
+func (p *PiInterpreter) handleCycleThinkingLevelResponse(line string) {
+	var resp rpcCycleThinkingLevelResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: cycle_thinking_level failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: cycle_thinking_level failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	if resp.Data.Level != "" {
+		p.writeControl(fmt.Sprintf("pi: thinking level set to: %s", resp.Data.Level))
+	} else {
+		p.writeControl("pi: cycling thinking level (model doesn't support thinking)")
+	}
 }
 
 // Get state command implementation
