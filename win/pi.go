@@ -473,6 +473,7 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 	var cmd string
 	var args []string
 
+	// Only recognize :win as command prefix (not /)
 	if fields[0] == ":win" {
 		if len(fields) < 2 {
 			p.showHelp()
@@ -480,10 +481,8 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 		}
 		cmd = fields[1]
 		args = fields[2:]
-	} else if strings.HasPrefix(fields[0], "/") {
-		cmd = strings.TrimPrefix(fields[0], "/")
-		args = fields[1:]
 	} else {
+		// Not a win command, let it pass through as message to pi
 		return false, nil
 	}
 
