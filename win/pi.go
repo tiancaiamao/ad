@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -413,73 +414,90 @@ func (p *PiInterpreter) SetOutputWriter(writer repl.OutputWriter) {
 
 func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 	fields := strings.Fields(input)
-	if len(fields) == 0 || fields[0] != ":win" {
+	if len(fields) == 0 {
 		return false, nil
 	}
 
-	if len(fields) == 1 || fields[1] == "help" {
+	// Recognize both :win and / as command prefixes
+	var cmd string
+	var args []string
+
+	if fields[0] == ":win" {
+		if len(fields) < 2 {
+			p.showHelp()
+			return true, nil
+		}
+		cmd = fields[1]
+		args = fields[2:]
+	} else if strings.HasPrefix(fields[0], "/") {
+		cmd = strings.TrimPrefix(fields[0], "/")
+		args = fields[1:]
+	} else {
+		return false, nil
+	}
+
+	// Handle help explicitly
+	if cmd == "help" || cmd == "" {
 		p.showHelp()
 		return true, nil
 	}
 
-	switch fields[1] {
-	case "thinking":
-		if err := p.toggleSetting("thinking", fields[2:]); err != nil {
-			p.writeControlNoScroll(err.Error())
-		}
-		return true, nil
-	case "tools":
-		if err := p.toggleSetting("tools", fields[2:]); err != nil {
-			p.writeControlNoScroll(err.Error())
-		}
-		return true, nil
-	case "prefix":
-		if err := p.toggleSetting("prefix", fields[2:]); err != nil {
-			p.writeControlNoScroll(err.Error())
-		}
-		return true, nil
+	switch cmd {
 	case "show-settings":
 		p.showSettings()
 		return true, nil
-	case "quit":
-		p.writeControlNoScroll("win: exiting...")
-		return true, fmt.Errorf("quit requested")
-	case "models":
-		return true, p.showAvailableModels()
-	case "model":
-		if len(fields) == 2 {
-			// :win model without args - show usage
-			p.writeControlNoScroll("Usage: :win model <id|number> to set model")
-			return true, nil
-		}
-		return true, p.setModelFromInput(fields[2])
-	case "model-select":
-		// input is the selected text from visual mode
-		return true, p.handleModelSelectInput(input)
-	case "abort":
-		return true, p.abort()
-	case "new-session":
-		return true, p.newSession()
-	case "session-state":
+	case "session":
 		return true, p.getState()
-	case "thinking-level":
-		if len(fields) == 2 {
-			p.writeControlNoScroll("Usage: :win thinking-level <off|minimal|low|medium|high|xhigh>")
-			return true, nil
-		}
-		return true, p.setThinkingLevel(fields[2])
+	case "session-state": // backward compatibility
+		return true, p.getState()
 	case "messages":
 		return true, p.getMessages()
 	case "show-usage":
 		return true, p.showUsage()
-	case "auto-compaction":
-		if len(fields) == 2 {
-			p.writeControlNoScroll("Usage: :win auto-compaction <on|off>")
+	case "models": // deprecated, show warning
+		p.writeControlNoScroll("win: /models is deprecated, use /model-select instead")
+		return true, p.showAvailableModels()
+	case "model":
+		if len(args) == 0 {
+			p.writeControlNoScroll("win: /model is deprecated, use /model-select instead")
 			return true, nil
 		}
-		return true, p.setAutoCompaction(fields[2])
+		p.writeControlNoScroll("win: /model is deprecated, use /model-select instead")
+		return true, p.setModelFromInput(args[0])
+	case "model-select":
+		// input is the selected text from visual mode
+		return true, p.handleModelSelectInput(input)
+	case "new", "new-session": // both /new and :win new-session
+		return true, p.newSession()
+	case "abort":
+		return true, p.abort()
+	case "auto-compaction":
+		if len(args) == 0 {
+			p.writeControlNoScroll("Usage: /auto-compaction <on|off>")
+			return true, nil
+		}
+		return true, p.setAutoCompaction(args[0])
+	case "thinking-level":
+		if len(args) == 0 {
+			p.writeControlNoScroll("Usage: /thinking-level <off|minimal|low|medium|high|xhigh>")
+			return true, nil
+		}
+		return true, p.setThinkingLevel(args[0])
+	case "thinking", "tools", "prefix":
+		if err := p.toggleSetting(cmd, args); err != nil {
+			p.writeControlNoScroll(err.Error())
+		}
+		return true, nil
+	case "compact":
+		customInstructions := strings.Join(args, " ")
+		return true, p.compact(customInstructions)
+	case "resume":
+		return true, p.triggerSessionResume()
+	case "quit":
+		p.writeControlNoScroll("win: exiting...")
+		return true, fmt.Errorf("quit requested")
 	default:
-		p.writeControlNoScroll("win: unknown command (use :win help for usage)")
+		p.writeControlNoScroll(fmt.Sprintf("win: unknown command '%s' (use /help for usage)", cmd))
 		return true, nil
 	}
 }
@@ -727,6 +745,8 @@ func (p *PiInterpreter) handleResponse(line string) {
 		p.handleGetSessionStatsResponse(line)
 	case "set_auto_compaction":
 		p.handleSetAutoCompactionResponse(line)
+	case "compact":
+		p.handleCompactResponse(line)
 	}
 }
 
@@ -1131,37 +1151,39 @@ func (p *PiInterpreter) getShowPrefixes() bool {
 func (p *PiInterpreter) showHelp() {
 	var sb strings.Builder
 	sb.WriteString("═════════════════════════════════════\n")
-	sb.WriteString("win Commands\n")
+	sb.WriteString("win Commands (use /command or :win command)\n")
 	sb.WriteString("═════════════════════════════════════\n\n")
 
 	sb.WriteString("Information Commands:\n")
-	sb.WriteString("  :win show-settings      - Show win display settings (local config)\n")
-	sb.WriteString("  :win session-state      - Show pi session state (from pi)\n")
-	sb.WriteString("  :win messages           - Show all messages history\n")
-	sb.WriteString("  :win show-usage          - Show session usage statistics (tokens, cost)\n")
-	sb.WriteString("  :win models              - List available pi models\n\n")
+	sb.WriteString("  /session            - Show pi session state\n")
+	sb.WriteString("  /messages            - Show all messages history\n")
+	sb.WriteString("  /show-usage          - Show session statistics\n\n")
 
-	sb.WriteString("Display Settings (toggle what to show in buffer):\n")
-	sb.WriteString("  :win thinking [on|off|toggle]   - Show/hide AI thinking\n")
-	sb.WriteString("  :win tools [on|off|toggle]      - Show/hide full tool output\n")
-	sb.WriteString("  :win prefix [on|off|toggle]     - Show/hide label prefixes\n\n")
+	sb.WriteString("Display Settings (win-specific):\n")
+	sb.WriteString("  /show-settings       - Show win display settings\n")
+	sb.WriteString("  /thinking [on|off]    - Show/hide AI thinking\n")
+	sb.WriteString("  /tools [on|off]      - Show/hide full tool output\n")
+	sb.WriteString("  /prefix [on|off]     - Show/hide label prefixes\n\n")
 
 	sb.WriteString("Model Management:\n")
-	sb.WriteString("  :win model <id|num>     - Set pi model\n")
-	sb.WriteString("  :win model-select       - Set model from visual selection\n\n")
+	sb.WriteString("  /model-select        - Interactive model selection\n\n")
 
-	sb.WriteString("Session Control:\n")
-	sb.WriteString("  :win new-session        - Start a new pi session\n")
-	sb.WriteString("  :win abort              - Abort current pi operation\n")
-	sb.WriteString("  :win auto-compaction <on|off>   - Enable/disable auto-compaction\n\n")
+	sb.WriteString("Session Management:\n")
+	sb.WriteString("  /new                 - Start a new session\n")
+	sb.WriteString("  /resume              - Resume from previous session\n\n")
 
-	sb.WriteString("Thinking Control:\n")
-	sb.WriteString("  :win thinking-level <off|minimal|low|medium|high|xhigh>\n")
-	sb.WriteString("                        - Set pi thinking level\n\n")
+	sb.WriteString("Context Control:\n")
+	sb.WriteString("  /compact [instructions] - Manually compact context\n\n")
+
+	sb.WriteString("Settings:\n")
+	sb.WriteString("  /auto-compaction <on|off> - Enable/disable auto-compaction\n")
+	sb.WriteString("  /thinking-level <off|minimal|low|medium|high|xhigh>\n")
+	sb.WriteString("                       - Set pi thinking level\n\n")
 
 	sb.WriteString("Win Control:\n")
-	sb.WriteString("  :win quit               - Exit win\n")
-	sb.WriteString("  :win help               - Show this help message\n\n")
+	sb.WriteString("  /abort               - Abort current operation\n")
+	sb.WriteString("  /quit                - Exit win\n")
+	sb.WriteString("  /help                - Show this help message\n\n")
 
 	sb.WriteString("═════════════════════════════════════\n")
 
@@ -1195,6 +1217,100 @@ func (p *PiInterpreter) showSettings() {
 	p.stateMu.Unlock()
 
 	p.writeControlNoScroll("=============================")
+}
+
+func (p *PiInterpreter) compact(customInstructions string) error {
+	cmd := map[string]interface{}{
+		"type": "compact",
+	}
+
+	if customInstructions != "" {
+		cmd["customInstructions"] = customInstructions
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: failed to marshal compact: %v", err))
+		return err
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		p.writeControlNoScroll("win: pi stdin not available")
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: failed to write to pi: %v", err))
+		return err
+	}
+
+	p.writeControlNoScroll("win: compaction requested...")
+	return nil
+}
+
+func (p *PiInterpreter) handleCompactResponse(line string) error {
+	var resp struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+		Data    struct {
+			Summary          string `json:"summary"`
+			FirstKeptEntryID string `json:"firstKeptEntryId"`
+			TokensBefore     int    `json:"tokensBefore"`
+			TokensAfter      int    `json:"tokensAfter"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		p.writeControlNoScroll(fmt.Sprintf("win: compaction failed: %s", resp.Error))
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("Compaction Complete\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+	sb.WriteString(fmt.Sprintf("Tokens before: %d\n", resp.Data.TokensBefore))
+	sb.WriteString(fmt.Sprintf("Tokens after:  %d\n", resp.Data.TokensAfter))
+	if resp.Data.TokensBefore > 0 {
+		reduction := float64(resp.Data.TokensBefore-resp.Data.TokensAfter) / float64(resp.Data.TokensBefore) * 100
+		sb.WriteString(fmt.Sprintf("Reduction:    %.1f%%\n", reduction))
+	}
+	sb.WriteString(fmt.Sprintf("\nSummary: %s\n", resp.Data.Summary))
+	sb.WriteString("═════════════════════════════════════\n")
+
+	p.writeControlNoScroll(sb.String())
+	return nil
+}
+
+func (p *PiInterpreter) triggerSessionResume() error {
+	// This will interact with ad's minibuffer mechanism
+	// List sessions and allow selection
+
+	// TODO: Implement proper minibuffer integration
+	p.writeControlNoScroll("win: /resume - session selection (minibuffer integration needed)")
+
+	// For now, list available sessions
+	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions")
+	if entries, err := os.ReadDir(sessionDir); err == nil {
+		p.writeControlNoScroll(fmt.Sprintf("Found %d session directories", len(entries)))
+		for _, entry := range entries {
+			if entry.IsDir() {
+				p.writeControlNoScroll(fmt.Sprintf("  - %s", entry.Name()))
+			}
+		}
+	}
+
+	return nil
 }
 
 func (p *PiInterpreter) showAvailableModels() error {
