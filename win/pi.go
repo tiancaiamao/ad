@@ -43,6 +43,7 @@ type PiInterpreter struct {
 	availableModels      []Model
 	currentModelID       string
 	currentModelProvider string
+	currentThinkingLevel string
 }
 
 type piToolState struct {
@@ -95,6 +96,44 @@ type rpcSetModelResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error"`
 	Data    Model  `json:"data"`
+}
+
+type rpcGetStateResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Model              *Model `json:"model"`
+		ThinkingLevel      string `json:"thinkingLevel"`
+		IsStreaming        bool   `json:"isStreaming"`
+		IsCompacting       bool   `json:"isCompacting"`
+		SteeringMode       string `json:"steeringMode"`
+		FollowUpMode       string `json:"followUpMode"`
+		SessionFile        string `json:"sessionFile"`
+		SessionID          string `json:"sessionId"`
+		SessionName        string `json:"sessionName"`
+		AutoCompactionEnabled bool `json:"autoCompactionEnabled"`
+		MessageCount       int    `json:"messageCount"`
+		PendingMessageCount int   `json:"pendingMessageCount"`
+	} `json:"data"`
+}
+
+type rpcNewSessionResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Cancelled bool `json:"cancelled"`
+	} `json:"data"`
+}
+
+type rpcSetThinkingLevelResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
 }
 
 type rpcMessage struct {
@@ -170,6 +209,7 @@ func NewPiInterpreter(cmdPath string, cmdArgs []string, debug bool) *PiInterpret
 		toolStates:             make(map[string]*piToolState),
 		currentMessageRole:     "",
 		currentMessageStreamed: false,
+		currentThinkingLevel:   "",
 	}
 }
 
@@ -293,7 +333,7 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 	}
 
 	if len(fields) == 1 || fields[1] == "help" {
-		p.writeControlNoScroll("win: commands: thinking|tools|prefix [on|off|toggle], status, quit, models, model [id|num], model-select")
+		p.showHelp()
 		return true, nil
 	}
 
@@ -331,8 +371,20 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 	case "model-select":
 		// input is the selected text from visual mode
 		return true, p.handleModelSelectInput(input)
+	case "abort":
+		return true, p.abort()
+	case "new-session":
+		return true, p.newSession()
+	case "session-state":
+		return true, p.getState()
+	case "thinking-level":
+		if len(fields) == 2 {
+			p.writeControlNoScroll("Usage: :win thinking-level <off|minimal|low|medium|high|xhigh>")
+			return true, nil
+		}
+		return true, p.setThinkingLevel(fields[2])
 	default:
-		p.writeControlNoScroll("win: unknown command")
+		p.writeControlNoScroll("win: unknown command (use :win help for usage)")
 		return true, nil
 	}
 }
@@ -489,6 +541,14 @@ func (p *PiInterpreter) handleResponse(line string) {
 		p.handleAvailableModelsResponse(line)
 	case "set_model":
 		p.handleSetModelResponse(line)
+	case "abort":
+		p.handleAbortResponse(line)
+	case "new_session":
+		p.handleNewSessionResponse(line)
+	case "get_state":
+		p.handleGetStateResponse(line)
+	case "set_thinking_level":
+		p.handleSetThinkingLevelResponse(line)
 	}
 }
 
@@ -819,7 +879,10 @@ func (p *PiInterpreter) writeRaw(s string) {
 		return
 	}
 	_ = writer.Write(s)
-	_ = writer.ScrollToBottom()
+	if err := writer.ScrollToBottom(); err != nil {
+		// Log error but don't fail the write
+		_ = fmt.Sprintf("scroll to bottom error: %v", err)
+	}
 }
 
 // writeRawNoScroll writes without scrolling to avoid deadlock in event handlers.
@@ -885,6 +948,45 @@ func (p *PiInterpreter) getShowPrefixes() bool {
 	return p.showPrefixes
 }
 
+// Display commands
+
+func (p *PiInterpreter) showHelp() {
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("win Commands\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+
+	sb.WriteString("Display Commands:\n")
+	sb.WriteString("  :win status           - Show win display settings (local)\n")
+	sb.WriteString("  :win session-state    - Show pi session state (from pi)\n")
+	sb.WriteString("  :win models           - List available pi models\n")
+	sb.WriteString("  :win help             - Show this help message\n\n")
+
+	sb.WriteString("Display Settings:\n")
+	sb.WriteString("  :win thinking [on|off|toggle]  - Show/hide AI thinking\n")
+	sb.WriteString("  :win tools [on|off|toggle]     - Show/hide full tool output\n")
+	sb.WriteString("  :win prefix [on|off|toggle]    - Show/hide label prefixes\n\n")
+
+	sb.WriteString("Model Management:\n")
+	sb.WriteString("  :win model <id|num>   - Set pi model\n")
+	sb.WriteString("  :win model-select     - Set model from visual selection\n\n")
+
+	sb.WriteString("Session Control:\n")
+	sb.WriteString("  :win new-session       - Start a new pi session\n")
+	sb.WriteString("  :win abort             - Abort current pi operation\n\n")
+
+	sb.WriteString("Thinking Control:\n")
+	sb.WriteString("  :win thinking-level <off|minimal|low|medium|high|xhigh>\n")
+	sb.WriteString("                       - Set pi thinking level\n\n")
+
+	sb.WriteString("Win Control:\n")
+	sb.WriteString("  :win quit              - Exit win\n\n")
+
+	sb.WriteString("═════════════════════════════════════\n")
+
+	p.writeControlNoScroll(sb.String())
+}
+
 // Model management functions
 
 func (p *PiInterpreter) showStatus() {
@@ -898,6 +1000,9 @@ func (p *PiInterpreter) showStatus() {
 		p.writeControlNoScroll(fmt.Sprintf("model: %s", formatModelRef(p.currentModelProvider, p.currentModelID)))
 	} else {
 		p.writeControlNoScroll("model: (not set)")
+	}
+	if p.currentThinkingLevel != "" {
+		p.writeControlNoScroll(fmt.Sprintf("thinking-level: %s", p.currentThinkingLevel))
 	}
 	p.stateMu.Unlock()
 
@@ -1128,4 +1233,245 @@ func (p *PiInterpreter) updateAvailableModels(models []Model) {
 	sb.WriteString("  - Or type: :win model <number|provider/model-id>\n\n")
 
 	p.writeControlNoScroll(sb.String())
+}
+
+// Abort command implementation
+
+func (p *PiInterpreter) abort() error {
+	cmd := map[string]interface{}{
+		"type": "abort",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal abort: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleAbortResponse(line string) {
+	var resp rpcResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: abort failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: abort failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	p.writeControl("pi: operation aborted")
+}
+
+// New session command implementation
+
+func (p *PiInterpreter) newSession() error {
+	cmd := map[string]interface{}{
+		"type": "new_session",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal new_session: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleNewSessionResponse(line string) {
+	var resp rpcNewSessionResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: new_session failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: new_session failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	if resp.Data.Cancelled {
+		p.writeControl("pi: new session cancelled by extension")
+		return
+	}
+
+	p.writeControl("pi: started new session")
+}
+
+// Get state command implementation
+
+func (p *PiInterpreter) getState() error {
+	cmd := map[string]interface{}{
+		"type": "get_state",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal get_state: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleGetStateResponse(line string) {
+	var resp rpcGetStateResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		p.writeControl(fmt.Sprintf("error parsing get_state response: %v", err))
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: get_state failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: get_state failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	data := resp.Data
+	p.stateMu.Lock()
+	p.currentThinkingLevel = data.ThinkingLevel
+	if data.Model != nil {
+		p.currentModelID = data.Model.ID
+		p.currentModelProvider = data.Model.Provider
+	}
+	p.stateMu.Unlock()
+
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("Session State\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+
+	sb.WriteString(fmt.Sprintf("Session ID: %s\n", data.SessionID))
+	if data.SessionName != "" {
+		sb.WriteString(fmt.Sprintf("Session Name: %s\n", data.SessionName))
+	}
+	if data.SessionFile != "" {
+		sb.WriteString(fmt.Sprintf("Session File: %s\n", data.SessionFile))
+	}
+	sb.WriteString(fmt.Sprintf("Streaming: %v\n", data.IsStreaming))
+	sb.WriteString(fmt.Sprintf("Compacting: %v\n", data.IsCompacting))
+	sb.WriteString(fmt.Sprintf("Steering Mode: %s\n", data.SteeringMode))
+	sb.WriteString(fmt.Sprintf("Follow-up Mode: %s\n", data.FollowUpMode))
+	sb.WriteString(fmt.Sprintf("Auto-compaction: %v\n", data.AutoCompactionEnabled))
+	sb.WriteString(fmt.Sprintf("Thinking Level: %s\n", data.ThinkingLevel))
+	sb.WriteString(fmt.Sprintf("Message Count: %d\n", data.MessageCount))
+	sb.WriteString(fmt.Sprintf("Pending Messages: %d\n", data.PendingMessageCount))
+
+	if data.Model != nil {
+		sb.WriteString(fmt.Sprintf("\nCurrent Model: %s\n", formatModelRef(data.Model.Provider, data.Model.ID)))
+		sb.WriteString(fmt.Sprintf("  Name: %s\n", data.Model.Name))
+		sb.WriteString(fmt.Sprintf("  API: %s\n", data.Model.API))
+		sb.WriteString(fmt.Sprintf("  Context Window: %d\n", data.Model.ContextWindow))
+		sb.WriteString(fmt.Sprintf("  Max Tokens: %d\n", data.Model.MaxTokens))
+	}
+
+	sb.WriteString("\n═════════════════════════════════════\n")
+
+	p.writeControlNoScroll(sb.String())
+}
+
+// Set thinking level command implementation
+
+func (p *PiInterpreter) setThinkingLevel(level string) error {
+	level = strings.ToLower(strings.TrimSpace(level))
+	validLevels := map[string]bool{
+		"off":     true,
+		"minimal": true,
+		"low":     true,
+		"medium":  true,
+		"high":    true,
+		"xhigh":   true,
+	}
+
+	if !validLevels[level] {
+		return fmt.Errorf("invalid thinking level (use off|minimal|low|medium|high|xhigh)")
+	}
+
+	cmd := map[string]interface{}{
+		"type":  "set_thinking_level",
+		"level": level,
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal set_thinking_level: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleSetThinkingLevelResponse(line string) {
+	var resp rpcSetThinkingLevelResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: set_thinking_level failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: set_thinking_level failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	p.writeControl("pi: thinking level updated")
 }

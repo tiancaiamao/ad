@@ -267,12 +267,44 @@ func (c *Client) CenterViewport(bufferID string) error {
 // ScrollToBottom scrolls a buffer to show the last line
 // Unlike CenterViewport, this doesn't save/restore focus
 func (c *Client) ScrollToBottom(bufferID string) error {
+	// Save the current buffer
+	currentBuffer, err := c.GetCurrentBuffer()
+	if err != nil {
+		return fmt.Errorf("get current buffer: %w", err)
+	}
+
+	// Focus the target buffer temporarily
+	if currentBuffer != bufferID {
+		if err := c.FocusBuffer(bufferID); err != nil {
+			return fmt.Errorf("focus buffer %s: %w", bufferID, err)
+		}
+	}
+
+	// Set addr to end of buffer
 	if err := c.WriteAddr(bufferID, "$"); err != nil {
+		// Try to restore focus before returning error
+		if currentBuffer != bufferID {
+			_ = c.FocusBuffer(currentBuffer)
+		}
 		return fmt.Errorf("write addr: %w", err)
 	}
+
+	// Scroll viewport to show the last line at bottom
 	if err := c.SetViewport("viewport-bottom"); err != nil {
+		// Try to restore focus before returning error
+		if currentBuffer != bufferID {
+			_ = c.FocusBuffer(currentBuffer)
+		}
 		return fmt.Errorf("viewport-bottom: %w", err)
 	}
+
+	// Restore focus to original buffer
+	if currentBuffer != "" && currentBuffer != bufferID {
+		if err := c.FocusBuffer(currentBuffer); err != nil {
+			return fmt.Errorf("restore focus to %s: %w", currentBuffer, err)
+		}
+	}
+
 	return nil
 }
 

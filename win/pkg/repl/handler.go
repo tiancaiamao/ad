@@ -280,25 +280,8 @@ func (h *Handler) ScrollToBottom() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	currentBuffer, err := h.client.GetCurrentBuffer()
-	if err != nil {
-		if err := h.client.ScrollToBottom(h.bufferID); err != nil {
-			return fmt.Errorf("scroll to bottom: %w", err)
-		}
-	} else {
-		if currentBuffer != h.bufferID {
-			if err := h.client.FocusBuffer(h.bufferID); err != nil {
-				return fmt.Errorf("focus buffer %s: %w", h.bufferID, err)
-			}
-		}
-		if err := h.client.ScrollToBottom(h.bufferID); err != nil {
-			return fmt.Errorf("scroll to bottom: %w", err)
-		}
-		if currentBuffer != h.bufferID {
-			if err := h.client.FocusBuffer(currentBuffer); err != nil {
-				return fmt.Errorf("restore focus %s: %w", currentBuffer, err)
-			}
-		}
+	if err := h.client.ScrollToBottom(h.bufferID); err != nil {
+		return fmt.Errorf("scroll to bottom: %w", err)
 	}
 
 	if h.config.Debug {
@@ -464,6 +447,10 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 					if handled {
 						if err := e.handler.deleteLastSendToWinInsert(); err != nil && e.handler.config.Debug {
 							log.Printf("[HANDLE-INSERT] delete send-to-win text failed: %v", err)
+						}
+						// Scroll to bottom to show the control command output
+						if err := e.handler.ScrollToBottom(); err != nil && e.handler.config.Debug {
+							log.Printf("[HANDLE-INSERT] ScrollToBottom after control command failed: %v", err)
 						}
 						return ad.Handled, nil
 					}
