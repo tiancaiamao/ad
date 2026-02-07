@@ -56,19 +56,27 @@ Example:
 - Tool output streams live into `+pi` with prefixes.
 
 Controls (handled locally by win):
-- `:win thinking on|off|toggle`
-- `:win tools on|off|toggle`
-- `:win prefix on|off|toggle`
-- `:win status` - Show win display settings (local)
+- `:win thinking on|off|toggle` - Show/hide AI thinking
+- `:win tools on|off|toggle` - Show/hide full tool output
+- `:win prefix on|off|toggle` - Show/hide label prefixes
+- `:win show-settings` - Show win display settings (local config)
 - `:win session-state` - Show pi session state (from pi)
-- `:win help` - Show all commands and usage
-- `:win quit` - Exit win
+- `:win messages` - Show all messages history (pi only)
+- `:win show-usage` - Show session usage statistics (pi only)
 - `:win models` - Show available models (pi only)
 - `:win model <number|provider/model-id>` - Set model (pi only)
 - `:win model-select` - Set model from visual selection (pi only)
 - `:win new-session` - Start a new pi session
 - `:win abort` - Abort current pi operation
+- `:win auto-compaction <on|off>` - Enable/disable auto-compaction (pi only)
 - `:win thinking-level <off|minimal|low|medium|high|xhigh>` - Set thinking level (pi only)
+- `:win help` - Show all commands and usage
+- `:win quit` - Exit win
+
+**Debugging**:
+- Run `win --debug` to enable detailed logging to `/tmp/win-repl.log`
+- See `DEBUGGING-TIPS.md` for diagnosing卡死 (hang) issues
+- `:win status` shows pi's working directory and PID
 
 **shell**
 - Uses a persistent `zsh -i` subprocess.
@@ -91,9 +99,11 @@ The script injects `;; <text>` into the target buffer, and win executes it when 
 `win-ctl` is a helper for local control commands (pi only). It sends `:win ...` via `send-to-win`.
 
 ```bash
-win-ctl +pi help           # Show all commands
-win-ctl +pi status         # Show win display settings
-win-ctl +pi session-state  # Show pi session state
+win-ctl +pi help             # Show all commands
+win-ctl +pi show-settings    # Show win display settings
+win-ctl +pi session-state    # Show pi session state
+win-ctl +pi messages         # Show message history
+win-ctl +pi show-usage       # Show session usage statistics
 win-ctl +pi thinking toggle
 win-ctl +pi tools off
 win-ctl +pi prefix toggle

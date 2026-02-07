@@ -299,14 +299,20 @@ func (h *Handler) Flush() error {
 // ExecuteCommand executes a command in interpreter.
 func (h *Handler) ExecuteCommand(input string, centerViewport bool) error {
 	if h.config.Debug {
-		log.Printf("[COMMAND] Executing: %q (centerViewport=%v)", input, centerViewport)
+		log.Printf("[COMMAND] START input=%q centerViewport=%v", input, centerViewport)
 	}
 
+	if h.config.Debug {
+		log.Printf("[COMMAND] Calling interpreter.Process...")
+	}
 	if err := h.interpreter.Process(h.ctx, input); err != nil {
 		if h.config.Debug {
-			log.Printf("[COMMAND] Error: %v", err)
+			log.Printf("[COMMAND] interpreter.Process ERROR: %v", err)
 		}
 		return fmt.Errorf("process input: %w", err)
+	}
+	if h.config.Debug {
+		log.Printf("[COMMAND] interpreter.Process completed successfully")
 	}
 
 	if centerViewport {
@@ -319,6 +325,9 @@ func (h *Handler) ExecuteCommand(input string, centerViewport bool) error {
 			}
 			return fmt.Errorf("center viewport: %w", err)
 		}
+		if h.config.Debug {
+			log.Printf("[COMMAND] CenterViewport completed")
+		}
 	} else {
 		if h.config.Debug {
 			log.Printf("[COMMAND] Focusing buffer %s", h.bufferID)
@@ -329,10 +338,13 @@ func (h *Handler) ExecuteCommand(input string, centerViewport bool) error {
 			}
 			return fmt.Errorf("focus buffer: %w", err)
 		}
+		if h.config.Debug {
+			log.Printf("[COMMAND] FocusBuffer completed")
+		}
 	}
 
 	if h.config.Debug {
-		log.Println("[COMMAND] Completed")
+		log.Printf("[COMMAND] END completed successfully")
 	}
 
 	return nil
@@ -421,7 +433,7 @@ type replEventHandler struct {
 // HandleInsert implements ad.EventHandler.HandleInsert.
 func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt string, client *ad.Client) (ad.Outcome, error) {
 	if e.handler.config.Debug {
-		log.Printf("[HANDLE-INSERT] source=%v from=%d to=%d txt=%q", source, from, to, txt)
+		log.Printf("[HANDLE-INSERT] START source=%v from=%d to=%d txt=%q", source, from, to, txt)
 	}
 
 	if err := e.handler.client.MarkClean(e.handler.bufferID); err != nil {
@@ -440,7 +452,13 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 					log.Printf("[HANDLE-INSERT] External command from send-to-win: %q", input)
 				}
 				if ctrl, ok := e.handler.interpreter.(ControlInterpreter); ok {
+					if e.handler.config.Debug {
+						log.Printf("[HANDLE-INSERT] Calling HandleControl...")
+					}
 					handled, err := ctrl.HandleControl(input)
+					if e.handler.config.Debug {
+						log.Printf("[HANDLE-INSERT] HandleControl returned: handled=%v err=%v", handled, err)
+					}
 					if err != nil {
 						return ad.Handled, err
 					}
@@ -452,6 +470,9 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 						if err := e.handler.ScrollToBottom(); err != nil && e.handler.config.Debug {
 							log.Printf("[HANDLE-INSERT] ScrollToBottom after control command failed: %v", err)
 						}
+						if e.handler.config.Debug {
+							log.Printf("[HANDLE-INSERT] END (control handled)")
+						}
 						return ad.Handled, nil
 					}
 				}
@@ -460,7 +481,14 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 						log.Printf("[HANDLE-INSERT] delete send-to-win text failed: %v", err)
 					}
 				}
-				return ad.Handled, e.handler.ExecuteCommand(input, true)
+				if e.handler.config.Debug {
+					log.Printf("[HANDLE-INSERT] Calling ExecuteCommand...")
+				}
+				err := e.handler.ExecuteCommand(input, true)
+				if e.handler.config.Debug {
+					log.Printf("[HANDLE-INSERT] ExecuteCommand returned: err=%v", err)
+				}
+				return ad.Handled, err
 			}
 		}
 
@@ -470,11 +498,17 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 			}
 			return ad.Handled, err
 		}
+		if e.handler.config.Debug {
+			log.Printf("[HANDLE-INSERT] END (Fsys insert, no command)")
+		}
 		return ad.Handled, nil
 	}
 
 	if source == ad.SourceKeyboard && txt == "\n" {
 		if !e.handler.config.EnableKeyboardExecute {
+			if e.handler.config.Debug {
+				log.Printf("[HANDLE-INSERT] END (keyboard execution disabled)")
+			}
 			return ad.Handled, nil
 		}
 		if e.handler.config.Debug {
@@ -504,15 +538,28 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 		}
 
 		if input != "" {
-			return ad.Handled, e.handler.ExecuteCommand(input, false)
+			if e.handler.config.Debug {
+				log.Printf("[HANDLE-INSERT] Calling ExecuteCommand...")
+			}
+			err := e.handler.ExecuteCommand(input, false)
+			if e.handler.config.Debug {
+				log.Printf("[HANDLE-INSERT] ExecuteCommand returned: err=%v", err)
+			}
+			return ad.Handled, err
 		}
 
 		if err := e.handler.client.WriteAddr(e.handler.bufferID, "$"); err != nil {
 			return ad.Handled, err
 		}
+		if e.handler.config.Debug {
+			log.Printf("[HANDLE-INSERT] END (empty input)")
+		}
 		return ad.Handled, nil
 	}
 
+	if e.handler.config.Debug {
+		log.Printf("[HANDLE-INSERT] END (passthrough for source=%v)", source)
+	}
 	return ad.Handled, nil
 }
 

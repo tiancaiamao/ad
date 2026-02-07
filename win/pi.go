@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sminez/ad/win/pkg/repl"
 )
@@ -44,6 +46,12 @@ type PiInterpreter struct {
 	currentModelID       string
 	currentModelProvider string
 	currentThinkingLevel string
+	autoCompactionEnabled bool
+
+	// Monitoring
+	lastPiActivity time.Time
+	rpcSequence    int64
+	workingDir     string
 }
 
 type piToolState struct {
@@ -130,6 +138,47 @@ type rpcNewSessionResponse struct {
 }
 
 type rpcSetThinkingLevelResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+}
+
+type rpcGetMessagesResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Messages []json.RawMessage `json:"messages"`
+	} `json:"data"`
+}
+
+type rpcGetSessionStatsResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		SessionFile        string `json:"sessionFile"`
+		SessionID          string `json:"sessionId"`
+		UserMessages       int    `json:"userMessages"`
+		AssistantMessages  int    `json:"assistantMessages"`
+		ToolCalls          int    `json:"toolCalls"`
+		ToolResults        int    `json:"toolResults"`
+		TotalMessages      int    `json:"totalMessages"`
+		Tokens             struct {
+			Input      int `json:"input"`
+			Output     int `json:"output"`
+			CacheRead  int `json:"cacheRead"`
+			CacheWrite int `json:"cacheWrite"`
+			Total      int `json:"total"`
+		} `json:"tokens"`
+		Cost float64 `json:"cost"`
+	} `json:"data"`
+}
+
+type rpcSetAutoCompactionResponse struct {
 	Type    string `json:"type"`
 	Command string `json:"command"`
 	Success bool   `json:"success"`
@@ -253,8 +302,27 @@ func (p *PiInterpreter) Start(ctx context.Context) error {
 		return fmt.Errorf("start pi: %w", err)
 	}
 
+	// Record the working directory (pi uses the same dir as win)
+	if wd, err := os.Getwd(); err == nil {
+		p.stateMu.Lock()
+		p.workingDir = wd
+		p.stateMu.Unlock()
+		if p.debug {
+			log.Printf("[PI-START] Working directory: %s", wd)
+		}
+	}
+
+	if p.debug {
+		log.Printf("[PI-START] pi started with PID %d", p.cmd.Process.Pid)
+	}
+
 	go p.readStdout(childCtx)
 	go p.readStderr(childCtx)
+
+	// Start heartbeat goroutine
+	if p.debug {
+		go p.heartbeat(childCtx)
+	}
 
 	return nil
 }
@@ -312,6 +380,12 @@ func (p *PiInterpreter) SendInput(input string) error {
 	}
 	data = append(data, '\n')
 
+	p.rpcSequence++
+	seq := p.rpcSequence
+	if p.debug {
+		log.Printf("[PI-RPC-SEND] seq=%d type=%s message_len=%d", seq, cmd.Type, len(cmd.Message))
+	}
+
 	if _, err := p.stdin.Write(data); err != nil {
 		return fmt.Errorf("write to pi: %w", err)
 	}
@@ -319,7 +393,18 @@ func (p *PiInterpreter) SendInput(input string) error {
 }
 
 func (p *PiInterpreter) Process(ctx context.Context, input string) error {
-	return p.SendInput(input)
+	if p.debug {
+		log.Printf("[PROCESS] START input_len=%d", len(input))
+	}
+	err := p.SendInput(input)
+	if p.debug {
+		if err != nil {
+			log.Printf("[PROCESS] END error=%v", err)
+		} else {
+			log.Printf("[PROCESS] END sent successfully")
+		}
+	}
+	return err
 }
 
 func (p *PiInterpreter) SetOutputWriter(writer repl.OutputWriter) {
@@ -353,8 +438,8 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 			p.writeControlNoScroll(err.Error())
 		}
 		return true, nil
-	case "status":
-		p.showStatus()
+	case "show-settings":
+		p.showSettings()
 		return true, nil
 	case "quit":
 		p.writeControlNoScroll("win: exiting...")
@@ -383,6 +468,16 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 			return true, nil
 		}
 		return true, p.setThinkingLevel(fields[2])
+	case "messages":
+		return true, p.getMessages()
+	case "show-usage":
+		return true, p.showUsage()
+	case "auto-compaction":
+		if len(fields) == 2 {
+			p.writeControlNoScroll("Usage: :win auto-compaction <on|off>")
+			return true, nil
+		}
+		return true, p.setAutoCompaction(fields[2])
 	default:
 		p.writeControlNoScroll("win: unknown command (use :win help for usage)")
 		return true, nil
@@ -470,8 +565,7 @@ func (p *PiInterpreter) readStderr(ctx context.Context) {
 
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 && p.debug {
-			// Log to debug file instead of stderr to avoid ad capturing it
-			// TODO: add proper logger
+			log.Printf("[PI-STDERR] %s", strings.TrimSpace(string(line)))
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -482,27 +576,91 @@ func (p *PiInterpreter) readStderr(ctx context.Context) {
 	}
 }
 
+// heartbeat logs periodic status updates for debugging
+func (p *PiInterpreter) heartbeat(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	log.Printf("[HEARTBEAT] Started - will log every 30 seconds")
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[HEARTBEAT] Stopped")
+			return
+		case <-ticker.C:
+			p.stateMu.Lock()
+			streaming := p.isStreaming
+			lastActivity := p.lastPiActivity
+			cmd := p.cmd
+			piPID := int64(0)
+			if cmd != nil && cmd.Process != nil {
+				piPID = int64(cmd.Process.Pid)
+			}
+			p.stateMu.Unlock()
+
+			// Check if pi is still running
+			if piPID > 0 {
+				proc, err := os.FindProcess(int(piPID))
+				if err != nil {
+					log.Printf("[HEARTBEAT] ERROR: Cannot find pi process: %v", err)
+				} else {
+					if err := proc.Signal(os.Signal(nil)); err != nil {
+						log.Printf("[HEARTBEAT] WARNING: pi process PID %d appears dead: %v", piPID, err)
+					}
+				}
+			}
+
+			// Log status
+			idleTime := time.Since(lastActivity)
+			log.Printf("[HEARTBEAT] pi_pid=%d streaming=%v idle=%s", piPID, streaming, idleTime)
+		}
+	}
+}
+
 func (p *PiInterpreter) handleLine(line string) {
 	if line == "" {
 		return
 	}
 
+	p.stateMu.Lock()
+	p.lastPiActivity = time.Now()
+	p.stateMu.Unlock()
+
 	var env rpcEnvelope
 	if err := json.Unmarshal([]byte(line), &env); err != nil {
-		// Silently skip malformed JSON lines
+		if p.debug {
+			log.Printf("[PI-RECV] Malformed JSON: %q", line)
+		}
 		return
+	}
+
+	if p.debug {
+		log.Printf("[PI-RECV] type=%s", env.Type)
 	}
 
 	switch env.Type {
 	case "response":
 		p.handleResponse(line)
 	case "agent_start":
+		if p.debug {
+			log.Printf("[PI-AGENT] Agent started (streaming)")
+		}
 		p.setStreaming(true)
 	case "agent_end":
+		if p.debug {
+			log.Printf("[PI-AGENT] Agent ended (streaming)")
+		}
 		p.setStreaming(false)
 	case "turn_start":
+		if p.debug {
+			log.Printf("[PI-TURN] Turn started (streaming)")
+		}
 		p.setStreaming(true)
 	case "turn_end":
+		if p.debug {
+			log.Printf("[PI-TURN] Turn ended (streaming)")
+		}
 		p.setStreaming(false)
 	case "message_start":
 		p.handleMessageStart(line)
@@ -516,6 +674,10 @@ func (p *PiInterpreter) handleLine(line string) {
 		p.handleToolUpdate(line)
 	case "tool_execution_end":
 		p.handleToolEnd(line)
+	default:
+		if p.debug {
+			log.Printf("[PI-RECV] Unknown event type: %s", env.Type)
+		}
 	}
 }
 
@@ -523,13 +685,23 @@ func (p *PiInterpreter) handleResponse(line string) {
 	// Parse the basic response first
 	var resp rpcResponse
 	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		if p.debug {
+			log.Printf("[PI-RESPONSE] ERROR failed to parse: %v", err)
+		}
 		return
+	}
+
+	if p.debug {
+		log.Printf("[PI-RESPONSE] command=%s success=%v", resp.Command, resp.Success)
 	}
 
 	if !resp.Success {
 		msg := fmt.Sprintf("pi: %s failed", resp.Command)
 		if resp.Error != "" {
 			msg = fmt.Sprintf("pi: %s failed: %s", resp.Command, resp.Error)
+		}
+		if p.debug {
+			log.Printf("[PI-RESPONSE] ERROR %s", msg)
 		}
 		p.writeControl(msg)
 		return
@@ -549,6 +721,12 @@ func (p *PiInterpreter) handleResponse(line string) {
 		p.handleGetStateResponse(line)
 	case "set_thinking_level":
 		p.handleSetThinkingLevelResponse(line)
+	case "get_messages":
+		p.handleGetMessagesResponse(line)
+	case "get_session_stats":
+		p.handleGetSessionStatsResponse(line)
+	case "set_auto_compaction":
+		p.handleSetAutoCompactionResponse(line)
 	}
 }
 
@@ -956,31 +1134,34 @@ func (p *PiInterpreter) showHelp() {
 	sb.WriteString("win Commands\n")
 	sb.WriteString("═════════════════════════════════════\n\n")
 
-	sb.WriteString("Display Commands:\n")
-	sb.WriteString("  :win status           - Show win display settings (local)\n")
-	sb.WriteString("  :win session-state    - Show pi session state (from pi)\n")
-	sb.WriteString("  :win models           - List available pi models\n")
-	sb.WriteString("  :win help             - Show this help message\n\n")
+	sb.WriteString("Information Commands:\n")
+	sb.WriteString("  :win show-settings      - Show win display settings (local config)\n")
+	sb.WriteString("  :win session-state      - Show pi session state (from pi)\n")
+	sb.WriteString("  :win messages           - Show all messages history\n")
+	sb.WriteString("  :win show-usage          - Show session usage statistics (tokens, cost)\n")
+	sb.WriteString("  :win models              - List available pi models\n\n")
 
-	sb.WriteString("Display Settings:\n")
-	sb.WriteString("  :win thinking [on|off|toggle]  - Show/hide AI thinking\n")
-	sb.WriteString("  :win tools [on|off|toggle]     - Show/hide full tool output\n")
-	sb.WriteString("  :win prefix [on|off|toggle]    - Show/hide label prefixes\n\n")
+	sb.WriteString("Display Settings (toggle what to show in buffer):\n")
+	sb.WriteString("  :win thinking [on|off|toggle]   - Show/hide AI thinking\n")
+	sb.WriteString("  :win tools [on|off|toggle]      - Show/hide full tool output\n")
+	sb.WriteString("  :win prefix [on|off|toggle]     - Show/hide label prefixes\n\n")
 
 	sb.WriteString("Model Management:\n")
-	sb.WriteString("  :win model <id|num>   - Set pi model\n")
-	sb.WriteString("  :win model-select     - Set model from visual selection\n\n")
+	sb.WriteString("  :win model <id|num>     - Set pi model\n")
+	sb.WriteString("  :win model-select       - Set model from visual selection\n\n")
 
 	sb.WriteString("Session Control:\n")
-	sb.WriteString("  :win new-session       - Start a new pi session\n")
-	sb.WriteString("  :win abort             - Abort current pi operation\n\n")
+	sb.WriteString("  :win new-session        - Start a new pi session\n")
+	sb.WriteString("  :win abort              - Abort current pi operation\n")
+	sb.WriteString("  :win auto-compaction <on|off>   - Enable/disable auto-compaction\n\n")
 
 	sb.WriteString("Thinking Control:\n")
 	sb.WriteString("  :win thinking-level <off|minimal|low|medium|high|xhigh>\n")
-	sb.WriteString("                       - Set pi thinking level\n\n")
+	sb.WriteString("                        - Set pi thinking level\n\n")
 
 	sb.WriteString("Win Control:\n")
-	sb.WriteString("  :win quit              - Exit win\n\n")
+	sb.WriteString("  :win quit               - Exit win\n")
+	sb.WriteString("  :win help               - Show this help message\n\n")
 
 	sb.WriteString("═════════════════════════════════════\n")
 
@@ -989,13 +1170,16 @@ func (p *PiInterpreter) showHelp() {
 
 // Model management functions
 
-func (p *PiInterpreter) showStatus() {
+func (p *PiInterpreter) showSettings() {
 	p.writeControlNoScroll("=== win display settings ===")
 	p.writeControlNoScroll(fmt.Sprintf("thinking: %v (show AI thinking)", p.getShowThinking()))
 	p.writeControlNoScroll(fmt.Sprintf("tools: %v (show full tool output, tool calls always shown)", p.getShowTools()))
 	p.writeControlNoScroll(fmt.Sprintf("prefix: %v (show 'assistant:', 'thinking:', 'tool:xxx:' labels)", p.getShowPrefixes()))
 
 	p.stateMu.Lock()
+	if p.workingDir != "" {
+		p.writeControlNoScroll(fmt.Sprintf("working-dir: %s", p.workingDir))
+	}
 	if p.currentModelID != "" || p.currentModelProvider != "" {
 		p.writeControlNoScroll(fmt.Sprintf("model: %s", formatModelRef(p.currentModelProvider, p.currentModelID)))
 	} else {
@@ -1003,6 +1187,10 @@ func (p *PiInterpreter) showStatus() {
 	}
 	if p.currentThinkingLevel != "" {
 		p.writeControlNoScroll(fmt.Sprintf("thinking-level: %s", p.currentThinkingLevel))
+	}
+	p.writeControlNoScroll(fmt.Sprintf("auto-compaction: %v", p.autoCompactionEnabled))
+	if p.cmd != nil && p.cmd.Process != nil {
+		p.writeControlNoScroll(fmt.Sprintf("pi-pid: %d", p.cmd.Process.Pid))
 	}
 	p.stateMu.Unlock()
 
@@ -1376,6 +1564,7 @@ func (p *PiInterpreter) handleGetStateResponse(line string) {
 	data := resp.Data
 	p.stateMu.Lock()
 	p.currentThinkingLevel = data.ThinkingLevel
+	p.autoCompactionEnabled = data.AutoCompactionEnabled
 	if data.Model != nil {
 		p.currentModelID = data.Model.ID
 		p.currentModelProvider = data.Model.Provider
@@ -1402,6 +1591,17 @@ func (p *PiInterpreter) handleGetStateResponse(line string) {
 	sb.WriteString(fmt.Sprintf("Thinking Level: %s\n", data.ThinkingLevel))
 	sb.WriteString(fmt.Sprintf("Message Count: %d\n", data.MessageCount))
 	sb.WriteString(fmt.Sprintf("Pending Messages: %d\n", data.PendingMessageCount))
+
+	// Add working directory info
+	p.stateMu.Lock()
+	workingDir := p.workingDir
+	if p.cmd != nil && p.cmd.Process != nil {
+		sb.WriteString(fmt.Sprintf("\nwin/pi PID: %d\n", p.cmd.Process.Pid))
+	}
+	p.stateMu.Unlock()
+	if workingDir != "" {
+		sb.WriteString(fmt.Sprintf("Working Directory: %s\n", workingDir))
+	}
 
 	if data.Model != nil {
 		sb.WriteString(fmt.Sprintf("\nCurrent Model: %s\n", formatModelRef(data.Model.Provider, data.Model.ID)))
@@ -1474,4 +1674,237 @@ func (p *PiInterpreter) handleSetThinkingLevelResponse(line string) {
 	}
 
 	p.writeControl("pi: thinking level updated")
+}
+
+// Get messages command implementation
+
+func (p *PiInterpreter) getMessages() error {
+	cmd := map[string]interface{}{
+		"type": "get_messages",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal get_messages: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleGetMessagesResponse(line string) {
+	var resp rpcGetMessagesResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		p.writeControl(fmt.Sprintf("error parsing get_messages response: %v", err))
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: get_messages failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: get_messages failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	messages := resp.Data.Messages
+	if len(messages) == 0 {
+		p.writeControl("No messages in session")
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString(fmt.Sprintf("Messages History (%d messages)\n", len(messages)))
+	sb.WriteString("═════════════════════════════════════\n\n")
+
+	for i, msg := range messages {
+		// Parse message to get role and content
+		var msgObj struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(msg, &msgObj); err != nil {
+			sb.WriteString(fmt.Sprintf("[%d] (parse error)\n", i+1))
+			continue
+		}
+
+		sb.WriteString(fmt.Sprintf("[%d] %s\n", i+1, msgObj.Role))
+
+		// Try to parse content
+		var contentStr string
+		if msgObj.Content[0] == '"' {
+			// Simple string content
+			if err := json.Unmarshal(msgObj.Content, &contentStr); err == nil {
+				// Truncate long content
+				if len(contentStr) > 200 {
+					contentStr = contentStr[:200] + "..."
+				}
+				sb.WriteString(fmt.Sprintf("    %s\n", contentStr))
+			}
+		} else {
+			// Structured content (tool calls, etc.)
+			var contentMap map[string]interface{}
+			if err := json.Unmarshal(msgObj.Content, &contentMap); err == nil {
+				if toolName, ok := contentMap["name"].(string); ok {
+					sb.WriteString(fmt.Sprintf("    tool: %s\n", toolName))
+				} else {
+					sb.WriteString(fmt.Sprintf("    (complex content, %d bytes)\n", len(msgObj.Content)))
+				}
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("═════════════════════════════════════\n")
+	p.writeControlNoScroll(sb.String())
+}
+
+// Show usage command implementation
+
+func (p *PiInterpreter) showUsage() error {
+	cmd := map[string]interface{}{
+		"type": "get_session_stats",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal get_session_stats: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleGetSessionStatsResponse(line string) {
+	var resp rpcGetSessionStatsResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		p.writeControl(fmt.Sprintf("error parsing get_session_stats response: %v", err))
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: get_session_stats failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: get_session_stats failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	stats := resp.Data
+
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("Session Usage\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+
+	sb.WriteString("Session Info:\n")
+	sb.WriteString(fmt.Sprintf("  Session ID: %s\n", stats.SessionID))
+	if stats.SessionFile != "" {
+		sb.WriteString(fmt.Sprintf("  Session File: %s\n", stats.SessionFile))
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("Message Counts:\n")
+	sb.WriteString(fmt.Sprintf("  User messages: %d\n", stats.UserMessages))
+	sb.WriteString(fmt.Sprintf("  Assistant messages: %d\n", stats.AssistantMessages))
+	sb.WriteString(fmt.Sprintf("  Tool calls: %d\n", stats.ToolCalls))
+	sb.WriteString(fmt.Sprintf("  Tool results: %d\n", stats.ToolResults))
+	sb.WriteString(fmt.Sprintf("  Total messages: %d\n", stats.TotalMessages))
+	sb.WriteString("\n")
+
+	sb.WriteString("Token Usage:\n")
+	sb.WriteString(fmt.Sprintf("  Input tokens: %d\n", stats.Tokens.Input))
+	sb.WriteString(fmt.Sprintf("  Output tokens: %d\n", stats.Tokens.Output))
+	sb.WriteString(fmt.Sprintf("  Cache read: %d\n", stats.Tokens.CacheRead))
+	sb.WriteString(fmt.Sprintf("  Cache write: %d\n", stats.Tokens.CacheWrite))
+	sb.WriteString(fmt.Sprintf("  Total tokens: %d\n", stats.Tokens.Total))
+	sb.WriteString("\n")
+
+	sb.WriteString(fmt.Sprintf("Estimated cost: $%.4f\n", stats.Cost))
+	sb.WriteString("\n═════════════════════════════════════\n")
+
+	p.writeControlNoScroll(sb.String())
+}
+
+// Set auto-compaction command implementation
+
+func (p *PiInterpreter) setAutoCompaction(arg string) error {
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	var enabled bool
+
+	switch arg {
+	case "on", "true", "1", "yes":
+		enabled = true
+	case "off", "false", "0", "no":
+		enabled = false
+	default:
+		return fmt.Errorf("invalid argument (use on|off)")
+	}
+
+	cmd := map[string]interface{}{
+		"type":    "set_auto_compaction",
+		"enabled": enabled,
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal set_auto_compaction: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	return nil
+}
+
+func (p *PiInterpreter) handleSetAutoCompactionResponse(line string) {
+	var resp rpcSetAutoCompactionResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: set_auto_compaction failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: set_auto_compaction failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	p.writeControl("pi: auto-compaction updated")
 }
