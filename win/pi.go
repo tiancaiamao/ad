@@ -43,10 +43,10 @@ type PiInterpreter struct {
 	toolStates map[string]*piToolState
 
 	// Model management
-	availableModels      []Model
-	currentModelID       string
-	currentModelProvider string
-	currentThinkingLevel string
+	availableModels       []Model
+	currentModelID        string
+	currentModelProvider  string
+	currentThinkingLevel  string
 	autoCompactionEnabled bool
 
 	// Monitoring
@@ -113,18 +113,18 @@ type rpcGetStateResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error"`
 	Data    struct {
-		Model              *Model `json:"model"`
-		ThinkingLevel      string `json:"thinkingLevel"`
-		IsStreaming        bool   `json:"isStreaming"`
-		IsCompacting       bool   `json:"isCompacting"`
-		SteeringMode       string `json:"steeringMode"`
-		FollowUpMode       string `json:"followUpMode"`
-		SessionFile        string `json:"sessionFile"`
-		SessionID          string `json:"sessionId"`
-		SessionName        string `json:"sessionName"`
-		AutoCompactionEnabled bool `json:"autoCompactionEnabled"`
-		MessageCount       int    `json:"messageCount"`
-		PendingMessageCount int   `json:"pendingMessageCount"`
+		Model                 *Model `json:"model"`
+		ThinkingLevel         string `json:"thinkingLevel"`
+		IsStreaming           bool   `json:"isStreaming"`
+		IsCompacting          bool   `json:"isCompacting"`
+		SteeringMode          string `json:"steeringMode"`
+		FollowUpMode          string `json:"followUpMode"`
+		SessionFile           string `json:"sessionFile"`
+		SessionID             string `json:"sessionId"`
+		SessionName           string `json:"sessionName"`
+		AutoCompactionEnabled bool   `json:"autoCompactionEnabled"`
+		MessageCount          int    `json:"messageCount"`
+		PendingMessageCount   int    `json:"pendingMessageCount"`
 	} `json:"data"`
 }
 
@@ -158,6 +158,30 @@ type rpcGetLastAssistantTextResponse struct {
 	} `json:"data"`
 }
 
+type rpcForkMessagesResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Messages []struct {
+			EntryID string `json:"entryId"`
+			Text    string `json:"text"`
+		} `json:"messages"`
+	} `json:"data"`
+}
+
+type rpcForkResponse struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+	Data    struct {
+		Cancelled bool   `json:"cancelled"`
+		Text      string `json:"text"`
+	} `json:"data"`
+}
+
 type rpcCycleThinkingLevelResponse struct {
 	Type    string `json:"type"`
 	Command string `json:"command"`
@@ -181,7 +205,7 @@ type rpcSetThinkingLevelResponse struct {
 type rpcSlashCommand struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Source      string `json:"source"` // "extension", "prompt", "skill"
+	Source      string `json:"source"`             // "extension", "prompt", "skill"
 	Location    string `json:"location,omitempty"` // "user", "project", "path"
 	Path        string `json:"path,omitempty"`
 }
@@ -212,14 +236,14 @@ type rpcGetSessionStatsResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error"`
 	Data    struct {
-		SessionFile        string `json:"sessionFile"`
-		SessionID          string `json:"sessionId"`
-		UserMessages       int    `json:"userMessages"`
-		AssistantMessages  int    `json:"assistantMessages"`
-		ToolCalls          int    `json:"toolCalls"`
-		ToolResults        int    `json:"toolResults"`
-		TotalMessages      int    `json:"totalMessages"`
-		Tokens             struct {
+		SessionFile       string `json:"sessionFile"`
+		SessionID         string `json:"sessionId"`
+		UserMessages      int    `json:"userMessages"`
+		AssistantMessages int    `json:"assistantMessages"`
+		ToolCalls         int    `json:"toolCalls"`
+		ToolResults       int    `json:"toolResults"`
+		TotalMessages     int    `json:"totalMessages"`
+		Tokens            struct {
 			Input      int `json:"input"`
 			Output     int `json:"output"`
 			CacheRead  int `json:"cacheRead"`
@@ -548,6 +572,15 @@ func (p *PiInterpreter) HandleControl(input string) (bool, error) {
 	case "resume":
 		sessionPath := strings.Join(args, " ")
 		return true, p.triggerSessionResume(sessionPath)
+	case "fork":
+		// Fork from a previous message
+		if len(args) == 0 {
+			return true, p.getForkMessages()
+		}
+		return true, p.fork(args[0])
+	case "tree":
+		// Show conversation tree (simplified - shows message history)
+		return true, p.getMessages()
 	case "copy":
 		return true, p.copyLastAssistantText()
 	case "quit":
@@ -812,6 +845,10 @@ func (p *PiInterpreter) handleResponse(line string) {
 		p.handleSetAutoCompactionResponse(line)
 	case "compact":
 		p.handleCompactResponse(line)
+	case "get_fork_messages":
+		p.handleGetForkMessagesResponse(line)
+	case "fork":
+		p.handleForkResponse(line)
 	}
 }
 
@@ -1236,7 +1273,9 @@ func (p *PiInterpreter) showHelp() {
 
 	sb.WriteString("Session Management:\n")
 	sb.WriteString("  /new                 - Start a new session\n")
-	sb.WriteString("  /resume              - Resume from previous session\n\n")
+	sb.WriteString("  /resume              - Resume from previous session\n")
+	sb.WriteString("  /fork [entry-id]     - Fork from a previous message\n")
+	sb.WriteString("  /tree                - Show conversation history\n\n")
 
 	sb.WriteString("Context Control:\n")
 	sb.WriteString("  /compact [instructions] - Manually compact context\n")
@@ -1547,6 +1586,63 @@ func (p *PiInterpreter) copyLastAssistantText() error {
 	}
 
 	p.writeControlNoScroll("win: fetching last assistant message...")
+	return nil
+}
+
+func (p *PiInterpreter) getForkMessages() error {
+	// Send get_fork_messages command
+	cmd := map[string]interface{}{
+		"type": "get_fork_messages",
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal get_fork_messages: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: failed to get fork messages: %v", err))
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	p.writeControlNoScroll("win: fetching messages for forking...")
+	return nil
+}
+
+func (p *PiInterpreter) fork(entryID string) error {
+	// Send fork command
+	cmd := map[string]interface{}{
+		"type":    "fork",
+		"entryId": entryID,
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("marshal fork: %w", err)
+	}
+	data = append(data, '\n')
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		p.writeControlNoScroll(fmt.Sprintf("win: failed to fork: %v", err))
+		return fmt.Errorf("write to pi: %w", err)
+	}
+
+	p.writeControlNoScroll(fmt.Sprintf("win: forking from entry %s...", entryID))
 	return nil
 }
 
@@ -2045,6 +2141,82 @@ func (p *PiInterpreter) handleGetLastAssistantTextResponse(line string) {
 	lineCount := strings.Count(resp.Data.Text, "\n") + 1
 
 	p.writeControl(fmt.Sprintf("win: copied last assistant message to clipboard (%d characters, %d lines)", charCount, lineCount))
+}
+
+func (p *PiInterpreter) handleGetForkMessagesResponse(line string) {
+	var resp rpcForkMessagesResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: get_fork_messages failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: get_fork_messages failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	if len(resp.Data.Messages) == 0 {
+		p.writeControl("win: no user messages available for forking")
+		return
+	}
+
+	// Display available messages for forking
+	var sb strings.Builder
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("Available Messages for Forking\n")
+	sb.WriteString("═════════════════════════════════════\n\n")
+
+	for i, msg := range resp.Data.Messages {
+		// Truncate message text for display
+		displayText := msg.Text
+		if len(displayText) > 60 {
+			displayText = displayText[:57] + "..."
+		}
+		// Replace newlines with spaces
+		displayText = strings.ReplaceAll(displayText, "\n", " ")
+
+		sb.WriteString(fmt.Sprintf("  [%d] %s\n", i+1, displayText))
+		sb.WriteString(fmt.Sprintf("      Entry ID: %s\n\n", msg.EntryID))
+	}
+
+	sb.WriteString("═════════════════════════════════════\n")
+	sb.WriteString("Usage: /fork <entry-id>\n")
+	sb.WriteString("Example: /fork msg-abc123\n")
+	sb.WriteString("═════════════════════════════════════\n")
+
+	p.writeControlNoScroll(sb.String())
+}
+
+func (p *PiInterpreter) handleForkResponse(line string) {
+	var resp rpcForkResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		return
+	}
+
+	if !resp.Success {
+		msg := "pi: fork failed"
+		if resp.Error != "" {
+			msg = fmt.Sprintf("pi: fork failed: %s", resp.Error)
+		}
+		p.writeControl(msg)
+		return
+	}
+
+	if resp.Data.Cancelled {
+		p.writeControl("win: fork cancelled")
+		return
+	}
+
+	p.writeControlNoScroll("win: fork successful - branched to new session")
+
+	// If there's selected text, you might want to display it or do something with it
+	// In the TUI version, this text is used to pre-fill the editor
+	if resp.Data.Text != "" {
+		p.writeControl(fmt.Sprintf("  Selected text: %s", resp.Data.Text))
+	}
 }
 
 func (p *PiInterpreter) cycleThinkingLevel() error {

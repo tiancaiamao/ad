@@ -322,7 +322,7 @@ impl<'a> Iterator for LineIter<'a> {
     type Item = TokenIter<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.line == self.n_lines {
+        if self.line >= self.n_lines {
             return None;
         }
 
@@ -787,6 +787,13 @@ mod tests {
             tag: "string",
             r: ByteRange { from, to },
         }
+    }
+
+    #[test]
+    fn line_iter_past_end_yields_none() {
+        let gb = GapBuffer::from("one\ntwo\n");
+        let mut it = LineIter::new(10, &gb, Range::BOF, None, &[], &[]);
+        assert!(it.next().is_none());
     }
 
     // range at start of single token
