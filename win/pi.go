@@ -468,10 +468,78 @@ func (p *PiInterpreter) SendInput(input string) error {
 	return nil
 }
 
+func (p *PiInterpreter) sendRawRPC(rpcCmd string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.stdin == nil {
+		return fmt.Errorf("pi stdin not available")
+	}
+
+	// Validate that it's valid JSON
+	var js map[string]interface{}
+	if err := json.Unmarshal([]byte(rpcCmd), &js); err != nil {
+		return fmt.Errorf("invalid JSON in RPC command: %w", err)
+	}
+
+	// Send the raw JSON command directly
+	data := []byte(rpcCmd)
+	data = append(data, '\n')
+
+	p.rpcSequence++
+	seq := p.rpcSequence
+	if p.debug {
+		log.Printf("[PI-RAW-RPC-SEND] seq=%d data_len=%d", seq, len(data))
+	}
+
+	if _, err := p.stdin.Write(data); err != nil {
+		return fmt.Errorf("write to pi: %w", err)
+	}
+	return nil
+}
+
 func (p *PiInterpreter) Process(ctx context.Context, input string) error {
 	if p.debug {
 		log.Printf("[PROCESS] START input_len=%d", len(input))
 	}
+
+	// Check if input is a direct RPC command (prefixed with ::rpc)
+	if strings.HasPrefix(input, "::rpc") {
+		// Extract the JSON command after the prefix
+		rpcCmd := strings.TrimSpace(input[5:]) // Remove "::rpc" prefix
+		if p.debug {
+			log.Printf("[PROCESS] Sending direct RPC command: %s", rpcCmd)
+		}
+		err := p.sendRawRPC(rpcCmd)
+		if p.debug {
+			if err != nil {
+				log.Printf("[PROCESS] Direct RPC END error=%v", err)
+			} else {
+				log.Printf("[PROCESS] Direct RPC END sent successfully")
+			}
+		}
+		return err
+	}
+
+	// Check if input ends with ::rpc followed by JSON on the next line
+	// This handles the case where ::rpc command is written to buffer
+	if strings.Contains(input, "::rpc") {
+		lines := strings.Split(input, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "::rpc") {
+				rpcCmd := strings.TrimSpace(line[5:])
+				if p.debug {
+					log.Printf("[PROCESS] Found ::rpc command in input: %s", rpcCmd)
+				}
+				// Execute the RPC command
+				_ = p.sendRawRPC(rpcCmd)
+				// Return without processing as regular input
+				return nil
+			}
+		}
+	}
+
 	err := p.SendInput(input)
 	if p.debug {
 		if err != nil {
