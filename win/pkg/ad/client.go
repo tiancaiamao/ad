@@ -470,6 +470,35 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 	}
 }
 
+// MinibufferSelect opens the minibuffer with the given options and returns the selected line
+// It writes the options to ad/minibuffer, optionally sets a prompt, and reads back the selection
+func (c *Client) MinibufferSelect(prompt string, options []string) (string, error) {
+	// Write options to the minibuffer
+	lines := strings.Join(options, "\n")
+	if lines != "" {
+		lines += "\n"
+	}
+	if _, err := c.WriteFile("minibuffer", []byte(lines)); err != nil {
+		return "", fmt.Errorf("write minibuffer: %w", err)
+	}
+
+	// Optionally set the prompt
+	if prompt != "" {
+		cmd := fmt.Sprintf("minibuffer-prompt %s", prompt)
+		if _, err := c.WriteFile("ctl", []byte(cmd)); err != nil {
+			return "", fmt.Errorf("set minibuffer prompt: %w", err)
+		}
+	}
+
+	// Read the user's selection
+	selection, err := c.ReadFile("minibuffer")
+	if err != nil {
+		return "", fmt.Errorf("read minibuffer: %w", err)
+	}
+
+	return strings.TrimSpace(selection), nil
+}
+
 // WriteEventBack writes an event back to the event file for ad to process
 func (c *Client) WriteEventBack(bufferID string, evt *FsysEvent) error {
 	data, err := json.Marshal(evt)
