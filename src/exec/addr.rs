@@ -466,6 +466,7 @@ pub trait Address: Haystack + Sized {
 
             Regex(re) => {
                 let from = cur_dot.last_cur().idx;
+                let from = self.char_to_byte(from)?;
                 let m = re.find_from(self, from)?;
                 let (byte_from, byte_to) = m.loc();
                 let from = self.byte_to_char(byte_from).unwrap();
@@ -476,6 +477,7 @@ pub trait Address: Haystack + Sized {
 
             RegexBack(re) => {
                 let from = cur_dot.first_cur().idx;
+                let from = self.char_to_byte(from)?;
                 let m = re.find_rev_from(self, from)?;
                 let (byte_from, byte_to) = m.loc();
                 let from = self.byte_to_char(byte_from).unwrap();
@@ -676,6 +678,17 @@ mod tests {
 
         assert_eq!(b.dot, expected, ">{}<", b.dot_contents());
         assert_eq!(b.dot_contents(), expected_contents);
+    }
+
+    #[test]
+    fn map_addr_regex_handles_multibyte_offsets() {
+        let mut b = Buffer::new_unnamed(0, "a界b界c\n", Default::default());
+        b.dot = Cur::new(2).into(); // on 'b'
+
+        let addr = Addr::parse("-/界/").expect("valid addr");
+        b.dot = b.map_addr(&addr);
+
+        assert_eq!(b.dot_contents(), "界");
     }
 
     #[test_case("99999999999999999999"; "line number overflow")]
