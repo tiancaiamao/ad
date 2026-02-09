@@ -92,7 +92,7 @@ func (b *BaseInterpreter) IsStreaming() bool {
 
 // SetOutputWriter sets the output writer for streaming output.
 func (b *BaseInterpreter) SetOutputWriter(writer OutputWriter) {
-// 	fmt.Fprintf(os.Stderr, "[BASE-INTERPRETER] SetOutputWriter(%p)\n", writer)
+	// 	fmt.Fprintf(os.Stderr, "[BASE-INTERPRETER] SetOutputWriter(%p)\n", writer)
 	b.writer = writer
 }
 

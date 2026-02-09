@@ -1,11 +1,3 @@
-// Example: Shell REPL with persistent subprocess
-// This demonstrates an async interpreter that maintains a shell session.
-//
-// Usage:
-//   go run examples/shell_repl.go
-//
-// Or integrate into main.go by replacing EchoInterpreter with ShellInterpreter.
-
 package main
 
 import (
@@ -18,7 +10,7 @@ import (
 	"github.com/sminez/ad/win/pkg/repl"
 )
 
-// ShellInterpreter maintains a persistent shell subprocess.
+// ShellInterpreter maintains a persistent subprocess.
 type ShellInterpreter struct {
 	*repl.BaseInterpreter
 	cmd    *exec.Cmd
@@ -32,9 +24,9 @@ type ShellInterpreter struct {
 // NewShellInterpreter creates a new shell interpreter.
 func NewShellInterpreter(shell string, args ...string) (*ShellInterpreter, error) {
 	cmd := exec.Command(shell, args...)
-	cmd.Stdin = nil // We'll set this separately
+	cmd.Stdin = nil
 	cmd.Stdout = nil
-	cmd.Stderr = nil // Merge stderr with stdout
+	cmd.Stderr = nil
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -55,20 +47,17 @@ func NewShellInterpreter(shell string, args ...string) (*ShellInterpreter, error
 	}
 
 	interpreter := &ShellInterpreter{
-		BaseInterpreter: repl.NewBaseInterpreter(true), // Streaming
+		BaseInterpreter: repl.NewBaseInterpreter(true),
 		cmd:             cmd,
 		stdin:           stdin,
 		stdout:          stdout,
 		stderr:          stderr,
 	}
 
-	// Setup pipes (cmd.StdinPipe etc. already configured)
-	// The pipes are already connected to the cmd
-
 	return interpreter, nil
 }
 
-// Start starts the shell subprocess and begins streaming output.
+// Start starts the subprocess and begins streaming output.
 func (s *ShellInterpreter) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -76,21 +65,16 @@ func (s *ShellInterpreter) Start(ctx context.Context) error {
 	childCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	// Start the subprocess
 	if err := s.cmd.Start(); err != nil {
 		return fmt.Errorf("start shell: %w", err)
 	}
 
-	// Start streaming output in background
 	go s.streamOutput(childCtx)
-
 	return nil
 }
 
-// streamOutput reads stdout/stderr and writes to the buffer.
 func (s *ShellInterpreter) streamOutput(ctx context.Context) {
 	merged := io.MultiReader(s.stdout, s.stderr)
-
 	writer := s.GetOutputWriter()
 	if writer != nil {
 		if err := repl.CopyReader(ctx, merged, writer, 1024); err != nil {
@@ -103,12 +87,11 @@ func (s *ShellInterpreter) streamOutput(ctx context.Context) {
 	}
 }
 
-// GetOutputWriter returns the configured output writer.
 func (s *ShellInterpreter) GetOutputWriter() repl.OutputWriter {
 	return s.BaseInterpreter.GetOutputWriter()
 }
 
-// SendInput sends a command to the shell.
+// SendInput sends a command to the subprocess.
 func (s *ShellInterpreter) SendInput(input string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,12 +100,10 @@ func (s *ShellInterpreter) SendInput(input string) error {
 		return fmt.Errorf("stdin not available")
 	}
 
-	// Write the command
 	if _, err := s.stdin.Write([]byte(input)); err != nil {
 		return fmt.Errorf("write to stdin: %w", err)
 	}
 
-	// Add newline if not present
 	if len(input) == 0 || input[len(input)-1] != '\n' {
 		if _, err := s.stdin.Write([]byte("\n")); err != nil {
 			return fmt.Errorf("write newline: %w", err)
@@ -132,7 +113,7 @@ func (s *ShellInterpreter) SendInput(input string) error {
 	return nil
 }
 
-// Stop terminates the shell subprocess.
+// Stop terminates the subprocess.
 func (s *ShellInterpreter) Stop() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,8 +148,6 @@ func (s *ShellInterpreter) Stop() error {
 
 // Process implements Interpreter.Process.
 func (s *ShellInterpreter) Process(ctx context.Context, input string) error {
-	// Input is already present in the buffer (typed or send-to-win), so just
-	// forward it to the subprocess.
 	if err := s.SendInput(input); err != nil {
 		return err
 	}
