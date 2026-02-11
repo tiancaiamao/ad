@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -17,6 +17,7 @@ type Client struct {
 	fsys  *client.Fsys
 	ns    string
 	debug bool
+	log   *slog.Logger
 }
 
 func NewClient() (*Client, error) {
@@ -52,6 +53,7 @@ func NewClientWithDebug(debug bool) (*Client, error) {
 		fsys:  fsys,
 		ns:    ns,
 		debug: debug,
+		log:   slog.Default(), // Use default slog logger
 	}, nil
 }
 
@@ -70,10 +72,15 @@ func (c *Client) SetDebug(debug bool) {
 	c.debug = debug
 }
 
+// SetLogger sets the logger for the client.
+func (c *Client) SetLogger(logger *slog.Logger) {
+	c.log = logger
+}
+
 // debugLog logs a message if debug is enabled.
-func (c *Client) debugLog(format string, args ...interface{}) {
-	if c.debug {
-		log.Printf(format, args...)
+func (c *Client) debugLog(msg string, args ...any) {
+	if c.debug && c.log != nil {
+		c.log.Debug(msg, args...)
 	}
 }
 
@@ -122,9 +129,9 @@ func (c *Client) OpenInNewWindow(path string) (string, error) {
 	}
 
 	trimmed := strings.TrimSpace(bufferID)
-	c.debugLog("[OPEN-NEW-WINDOW] Raw buffer ID: %q", bufferID)
-	c.debugLog("[OPEN-NEW-WINDOW] Trimmed: %q (length: %d)", trimmed, len(trimmed))
-	c.debugLog("[OPEN-NEW-WINDOW] Event file path will be: buffers/%s/event", trimmed)
+	c.debugLog("[OPEN-NEW-WINDOW] Raw buffer ID", "id", bufferID)
+	c.debugLog("[OPEN-NEW-WINDOW] Trimmed", "id", trimmed, "length", len(trimmed))
+	c.debugLog("[OPEN-NEW-WINDOW] Event file path will be", "path", fmt.Sprintf("buffers/%s/event", trimmed))
 
 	return trimmed, nil
 }
@@ -329,17 +336,17 @@ func (c *Client) BodyWriter(bufferID string) *BodyWriter {
 // This continuously reads events from the buffer's event file and dispatches them to the handler
 func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 	c.debugLog("[RUN-EVENT-FILTER] Starting event filter")
-	c.debugLog("[RUN-EVENT-FILTER] Buffer ID: %s", bufferID)
+	c.debugLog("[RUN-EVENT-FILTER] Buffer ID", "id", bufferID)
 
 	eventPath := fmt.Sprintf("buffers/%s/event", bufferID)
-	c.debugLog("[RUN-EVENT-FILTER] Event path: %s", eventPath)
+	c.debugLog("[RUN-EVENT-FILTER] Event path", "path", eventPath)
 
 	// Open the event file with Open() to get a Fid for streaming reads
 	// This triggers ad to attach an input filter to the buffer
 	c.debugLog("[RUN-EVENT-FILTER] Opening event file (OREAD mode)...")
 	fid, err := c.fsys.Open(eventPath, plan9.OREAD)
 	if err != nil {
-		c.debugLog("[RUN-EVENT-FILTER] Open FAILED: %v", err)
+		c.debugLog("[RUN-EVENT-FILTER] Open FAILED", "error", err)
 		return fmt.Errorf("open %s: %w", eventPath, err)
 	}
 	defer fid.Close()
@@ -358,9 +365,9 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 		n, err := fid.Read(buf)
 
 		if n > 0 {
-			c.debugLog("[RUN-EVENT-FILTER] Read %d bytes from event file", n)
+			c.debugLog("[RUN-EVENT-FILTER] Read bytes from event file", "count", n)
 			readCount++
-			c.debugLog("[RUN-EVENT-FILTER] Total reads so far: %d", readCount)
+			c.debugLog("[RUN-EVENT-FILTER] Total reads so far", "count", readCount)
 
 			// Safety check: n should never exceed buffer size
 			if n > len(buf) {
@@ -387,17 +394,17 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 				}
 
 				lineCount++
-				c.debugLog("[EVENT-RAW] Line %d: %q", lineCount, line)
+				c.debugLog("[EVENT-RAW] Line", "num", lineCount, "content", line)
 
 				var evt FsysEvent
 				if err := json.Unmarshal([]byte(line), &evt); err != nil {
 					// Skip malformed events
-					c.debugLog("[EVENT-ERROR] Failed to parse: %v", err)
+					c.debugLog("[EVENT-ERROR] Failed to parse", "error", err)
 					continue
 				}
 
 				// DEBUG: 打印解析后的事件
-				c.debugLog("[EVENT] kind=%s source=%s txt=%q", evt.Kind, evt.Source, evt.Txt)
+				c.debugLog("[EVENT] kind source txt", "kind", evt.Kind, "source", evt.Source, "txt", evt.Txt)
 
 				// Convert string source to EventSource
 				var src EventSource
@@ -409,7 +416,7 @@ func (c *Client) RunEventFilter(bufferID string, handler EventHandler) error {
 				case "F":
 					src = SourceFsys
 				default:
-					c.debugLog("[EVENT] Unknown source: %s", evt.Source)
+					c.debugLog("[EVENT] Unknown source", "source", evt.Source)
 					continue
 				}
 

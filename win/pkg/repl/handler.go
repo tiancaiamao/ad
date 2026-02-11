@@ -4,8 +4,7 @@ package repl
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -77,6 +76,7 @@ type Handler struct {
 	mu          sync.Mutex
 	ctx         context.Context
 	cancel      context.CancelFunc
+	log         *slog.Logger
 }
 
 // NewHandler creates a new REPL handler.
@@ -107,16 +107,10 @@ func NewHandler(config Config, client *ad.Client, interpreter Interpreter) (*Han
 		doneChan:    make(chan struct{}),
 		ctx:         ctx,
 		cancel:      cancel,
+		log:         slog.Default(), // Use default slog logger
 	}
 
 	handler.client.SetDebug(config.Debug)
-
-	if config.Debug {
-		if err := handler.setupLogging(); err != nil {
-			cancel()
-			return nil, fmt.Errorf("setup logging: %w", err)
-		}
-	}
 
 	if err := handler.initBuffer(); err != nil {
 		cancel()
@@ -140,25 +134,6 @@ func NewHandler(config Config, client *ad.Client, interpreter Interpreter) (*Han
 	return handler, nil
 }
 
-// setupLogging configures debug logging.
-func (h *Handler) setupLogging() error {
-	logPath := h.config.LogPath
-	if logPath == "" {
-		logPath = "/tmp/repl.log"
-	}
-
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("open log file: %w", err)
-	}
-
-	log.SetOutput(f)
-	log.SetFlags(log.Ltime | log.Lmicroseconds)
-	log.Println("=== REPL Starting ===")
-
-	return nil
-}
-
 // initBuffer creates and initializes REPL buffer.
 func (h *Handler) initBuffer() error {
 	bufferID, err := h.client.OpenInNewWindow(h.config.WindowName)
@@ -168,7 +143,7 @@ func (h *Handler) initBuffer() error {
 	h.bufferID = bufferID
 
 	if h.config.Debug {
-		log.Printf("Created window %s with buffer ID: %s\n", h.config.WindowName, bufferID)
+		h.log.Debug("Created window", "name", h.config.WindowName, "bufferID", bufferID)
 	}
 
 	content := h.config.WelcomeMessage + h.config.Prompt
@@ -185,41 +160,31 @@ func (h *Handler) initBuffer() error {
 
 // Start begins the REPL session.
 func (h *Handler) Start() error {
-	if h.config.Debug {
-		log.Println("Starting interpreter...")
-	}
+	h.log.Info("Starting interpreter...")
 
 	if err := h.interpreter.Start(h.ctx); err != nil {
 		return fmt.Errorf("start interpreter: %w", err)
 	}
 
-	if h.config.Debug {
-		log.Println("Interpreter started successfully")
-		log.Println("Ready to process events")
-	}
+	h.log.Info("Interpreter started successfully")
+	h.log.Info("Ready to process events")
 
 	return nil
 }
 
 // Stop stops the REPL session.
 func (h *Handler) Stop() error {
-	if h.config.Debug {
-		log.Println("Stopping REPL...")
-	}
+	h.log.Info("Stopping REPL...")
 
 	h.cancel()
 
 	if err := h.interpreter.Stop(); err != nil {
-		if h.config.Debug {
-			log.Printf("Error stopping interpreter: %v", err)
-		}
+		h.log.Error("Error stopping interpreter", "error", err)
 	}
 
 	close(h.outputChan)
 
-	if h.config.Debug {
-		log.Println("REPL stopped")
-	}
+	h.log.Info("REPL stopped")
 
 	return nil
 }
@@ -243,7 +208,7 @@ func (h *Handler) WriteOutput(output string) error {
 	}
 
 	if h.config.Debug {
-		log.Printf("[OUTPUT] Wrote %d bytes", len(output))
+		h.log.Debug("[OUTPUT] Wrote bytes", "count", len(output))
 	}
 
 	return nil
@@ -269,7 +234,7 @@ func (h *Handler) WritePrompt() error {
 	}
 
 	if h.config.Debug {
-		log.Println("[OUTPUT] Wrote prompt with preceding newline")
+		h.log.Debug("[OUTPUT] Wrote prompt with preceding newline")
 	}
 
 	return nil
@@ -285,7 +250,7 @@ func (h *Handler) ScrollToBottom() error {
 	}
 
 	if h.config.Debug {
-		log.Println("[OUTPUT] Scrolled to bottom")
+		h.log.Debug("[OUTPUT] Scrolled to bottom")
 	}
 
 	return nil
@@ -299,52 +264,52 @@ func (h *Handler) Flush() error {
 // ExecuteCommand executes a command in interpreter.
 func (h *Handler) ExecuteCommand(input string, centerViewport bool) error {
 	if h.config.Debug {
-		log.Printf("[COMMAND] START input=%q centerViewport=%v", input, centerViewport)
+		h.log.Debug("[COMMAND] START", "input", input, "centerViewport", centerViewport)
 	}
 
 	if h.config.Debug {
-		log.Printf("[COMMAND] Calling interpreter.Process...")
+		h.log.Debug("[COMMAND] Calling interpreter.Process...")
 	}
 	if err := h.interpreter.Process(h.ctx, input); err != nil {
 		if h.config.Debug {
-			log.Printf("[COMMAND] interpreter.Process ERROR: %v", err)
+			h.log.Debug("[COMMAND] interpreter.Process ERROR", "error", err)
 		}
 		return fmt.Errorf("process input: %w", err)
 	}
 	if h.config.Debug {
-		log.Printf("[COMMAND] interpreter.Process completed successfully")
+		h.log.Debug("[COMMAND] interpreter.Process completed successfully")
 	}
 
 	if centerViewport {
 		if h.config.Debug {
-			log.Printf("[COMMAND] Centering viewport for buffer %s", h.bufferID)
+			h.log.Debug("[COMMAND] Centering viewport", "bufferID", h.bufferID)
 		}
 		if err := h.client.CenterViewport(h.bufferID); err != nil {
 			if h.config.Debug {
-				log.Printf("[COMMAND] CenterViewport error: %v", err)
+				h.log.Debug("[COMMAND] CenterViewport error", "error", err)
 			}
 			return fmt.Errorf("center viewport: %w", err)
 		}
 		if h.config.Debug {
-			log.Printf("[COMMAND] CenterViewport completed")
+			h.log.Debug("[COMMAND] CenterViewport completed")
 		}
 	} else {
 		if h.config.Debug {
-			log.Printf("[COMMAND] Focusing buffer %s", h.bufferID)
+			h.log.Debug("[COMMAND] Focusing buffer", "bufferID", h.bufferID)
 		}
 		if err := h.client.FocusBuffer(h.bufferID); err != nil {
 			if h.config.Debug {
-				log.Printf("[COMMAND] FocusBuffer error: %v", err)
+				h.log.Debug("[COMMAND] FocusBuffer error", "error", err)
 			}
 			return fmt.Errorf("focus buffer: %w", err)
 		}
 		if h.config.Debug {
-			log.Printf("[COMMAND] FocusBuffer completed")
+			h.log.Debug("[COMMAND] FocusBuffer completed")
 		}
 	}
 
 	if h.config.Debug {
-		log.Printf("[COMMAND] END completed successfully")
+		h.log.Debug("[COMMAND] END completed successfully")
 	}
 
 	return nil
@@ -433,12 +398,12 @@ type replEventHandler struct {
 // HandleInsert implements ad.EventHandler.HandleInsert.
 func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt string, client *ad.Client) (ad.Outcome, error) {
 	if e.handler.config.Debug {
-		log.Printf("[HANDLE-INSERT] START source=%v from=%d to=%d txt=%q", source, from, to, txt)
+		e.handler.log.Debug("[HANDLE-INSERT] START", "source", source, "from", from, "to", to, "txt", txt)
 	}
 
 	if err := e.handler.client.MarkClean(e.handler.bufferID); err != nil {
 		if e.handler.config.Debug {
-			log.Printf("[HANDLE-INSERT] MarkClean error: %v", err)
+			e.handler.log.Debug("[HANDLE-INSERT] MarkClean error", "error", err)
 		}
 		return ad.Handled, fmt.Errorf("mark-clean: %w", err)
 	}
@@ -449,15 +414,15 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 			input = strings.TrimRight(input, "\n")
 			if input != "" {
 				if e.handler.config.Debug {
-					log.Printf("[HANDLE-INSERT] External command from send-to-win: %q", input)
+					e.handler.log.Debug("[HANDLE-INSERT] External command from send-to-win", "input", input)
 				}
 				if ctrl, ok := e.handler.interpreter.(ControlInterpreter); ok {
 					if e.handler.config.Debug {
-						log.Printf("[HANDLE-INSERT] Calling HandleControl...")
+						e.handler.log.Debug("[HANDLE-INSERT] Calling HandleControl...")
 					}
 					handled, err := ctrl.HandleControl(input)
 					if e.handler.config.Debug {
-						log.Printf("[HANDLE-INSERT] HandleControl returned: handled=%v err=%v", handled, err)
+						e.handler.log.Debug("[HANDLE-INSERT] HandleControl returned", "handled", handled, "error", err)
 					}
 					if err != nil {
 						// Control command errors should be displayed, not cause REPL to exit
@@ -465,29 +430,29 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 					}
 					if handled {
 						if err := e.handler.deleteLastSendToWinInsert(); err != nil && e.handler.config.Debug {
-							log.Printf("[HANDLE-INSERT] delete send-to-win text failed: %v", err)
+							e.handler.log.Debug("[HANDLE-INSERT] delete send-to-win text failed", "error", err)
 						}
 						// Scroll to bottom to show the control command output
 						if err := e.handler.ScrollToBottom(); err != nil && e.handler.config.Debug {
-							log.Printf("[HANDLE-INSERT] ScrollToBottom after control command failed: %v", err)
+							e.handler.log.Debug("[HANDLE-INSERT] ScrollToBottom after control command failed", "error", err)
 						}
 						if e.handler.config.Debug {
-							log.Printf("[HANDLE-INSERT] END (control handled)")
+							e.handler.log.Debug("[HANDLE-INSERT] END (control handled)")
 						}
 						return ad.Handled, nil
 					}
 				}
 				if !e.handler.config.EchoSendInput {
 					if err := e.handler.deleteLastSendToWinInsert(); err != nil && e.handler.config.Debug {
-						log.Printf("[HANDLE-INSERT] delete send-to-win text failed: %v", err)
+						e.handler.log.Debug("[HANDLE-INSERT] delete send-to-win text failed", "error", err)
 					}
 				}
 				if e.handler.config.Debug {
-					log.Printf("[HANDLE-INSERT] Calling ExecuteCommand...")
+					e.handler.log.Debug("[HANDLE-INSERT] Calling ExecuteCommand...")
 				}
 				err := e.handler.ExecuteCommand(input, true)
 				if e.handler.config.Debug {
-					log.Printf("[HANDLE-INSERT] ExecuteCommand returned: err=%v", err)
+					e.handler.log.Debug("[HANDLE-INSERT] ExecuteCommand returned", "error", err)
 				}
 				// Don't let command errors cause REPL to exit - just log them
 				if err != nil {
@@ -501,7 +466,7 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 			return ad.Handled, err
 		}
 		if e.handler.config.Debug {
-			log.Printf("[HANDLE-INSERT] END (Fsys insert, no command)")
+			e.handler.log.Debug("[HANDLE-INSERT] END (Fsys insert, no command)")
 		}
 		return ad.Handled, nil
 	}
@@ -509,18 +474,18 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 	if source == ad.SourceKeyboard && txt == "\n" {
 		if !e.handler.config.EnableKeyboardExecute {
 			if e.handler.config.Debug {
-				log.Printf("[HANDLE-INSERT] END (keyboard execution disabled)")
+				e.handler.log.Debug("[HANDLE-INSERT] END (keyboard execution disabled)")
 			}
 			return ad.Handled, nil
 		}
 		if e.handler.config.Debug {
-			log.Println("[HANDLE-INSERT] User pressed Enter")
+			e.handler.log.Debug("[HANDLE-INSERT] User pressed Enter")
 		}
 
 		body, err := e.handler.client.ReadBody(e.handler.bufferID)
 		if err != nil {
 			if e.handler.config.Debug {
-				log.Printf("[HANDLE-INSERT] ReadBody error: %v", err)
+				e.handler.log.Debug("[HANDLE-INSERT] ReadBody error", "error", err)
 			}
 			return ad.Handled, fmt.Errorf("read-body: %w", err)
 		}
@@ -530,22 +495,22 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 		}
 
 		if e.handler.config.Debug {
-			log.Printf("[HANDLE-INSERT] body tail: %q", body)
+			e.handler.log.Debug("[HANDLE-INSERT] body tail", "body", body)
 		}
 
 		input := e.handler.ExtractLastLine(body)
 		input = e.handler.stripInputPrefix(input)
 		if e.handler.config.Debug {
-			log.Printf("[HANDLE-INSERT] Extracted input: %q", input)
+			e.handler.log.Debug("[HANDLE-INSERT] Extracted input", "input", input)
 		}
 
 		if input != "" {
 			if e.handler.config.Debug {
-				log.Printf("[HANDLE-INSERT] Calling ExecuteCommand...")
+				e.handler.log.Debug("[HANDLE-INSERT] Calling ExecuteCommand...")
 			}
 			err := e.handler.ExecuteCommand(input, false)
 			if e.handler.config.Debug {
-				log.Printf("[HANDLE-INSERT] ExecuteCommand returned: err=%v", err)
+				e.handler.log.Debug("[HANDLE-INSERT] ExecuteCommand returned", "error", err)
 			}
 			// Don't let command errors cause REPL to exit - just log them
 			if err != nil {
@@ -558,13 +523,13 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 			return ad.Handled, err
 		}
 		if e.handler.config.Debug {
-			log.Printf("[HANDLE-INSERT] END (empty input)")
+			e.handler.log.Debug("[HANDLE-INSERT] END (empty input)")
 		}
 		return ad.Handled, nil
 	}
 
 	if e.handler.config.Debug {
-		log.Printf("[HANDLE-INSERT] END (passthrough for source=%v)", source)
+		e.handler.log.Debug("[HANDLE-INSERT] END (passthrough)", "source", source)
 	}
 	return ad.Handled, nil
 }
@@ -572,7 +537,7 @@ func (e *replEventHandler) HandleInsert(source ad.EventSource, from, to int, txt
 // HandleDelete implements ad.EventHandler.HandleDelete.
 func (e *replEventHandler) HandleDelete(source ad.EventSource, from, to int, client *ad.Client) (ad.Outcome, error) {
 	if e.handler.config.Debug {
-		log.Printf("[HANDLE-DELETE] source=%v from=%d to=%d", source, from, to)
+		e.handler.log.Debug("[HANDLE-DELETE]", "source", source, "from", from, "to", to)
 	}
 
 	if err := e.handler.client.MarkClean(e.handler.bufferID); err != nil {
@@ -590,12 +555,12 @@ func (e *replEventHandler) HandleExecute(source ad.EventSource, from, to int, tx
 	input := strings.TrimSpace(txt)
 
 	if e.handler.config.Debug {
-		log.Printf("[HANDLE-EXECUTE] source=%v from=%d to=%d txt=%q input=%q", source, from, to, txt, input)
+		e.handler.log.Debug("[HANDLE-EXECUTE]", "source", source, "from", from, "to", to, "txt", txt, "input", input)
 	}
 
 	if err := e.handler.client.AppendToBody(e.handler.bufferID, "\n"); err != nil {
 		if e.handler.config.Debug {
-			log.Printf("[HANDLE-EXECUTE] AppendToBody error: %v", err)
+			e.handler.log.Debug("[HANDLE-EXECUTE] AppendToBody error", "error", err)
 		}
 		return ad.Handled, fmt.Errorf("append-to-body: %w", err)
 	}
@@ -610,18 +575,14 @@ func (e *replEventHandler) HandleExecute(source ad.EventSource, from, to int, tx
 
 // Run is a convenience method that starts the handler and runs the event loop.
 func (h *Handler) Run() error {
-	if h.config.Debug {
-		log.Printf("[RUN] Starting REPL for buffer %s\n", h.bufferID)
-	}
+	h.log.Info("[RUN] Starting REPL", "bufferID", h.bufferID)
 
 	if err := h.Start(); err != nil {
 		return err
 	}
 	defer h.Stop()
 
-	if h.config.Debug {
-		log.Printf("[RUN] Starting event filter...\n")
-	}
+	h.log.Info("[RUN] Starting event filter...")
 
 	eventHandler := h.NewEventHandler()
 	if err := h.client.RunEventFilter(h.bufferID, eventHandler); err != nil {
